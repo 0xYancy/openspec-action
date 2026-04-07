@@ -13,13 +13,18 @@ AFTER_SHA=$3
 : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
 OPENROUTER_MODEL="${OPENROUTER_MODEL:-qwen/qwen3.6-plus:free}"
 
-# 收集该 change 目录下所有 .md 文件的 diff
-DIFF=$(git diff "$BEFORE_SHA" "$AFTER_SHA" -- \
-  "openspec/changes/$CHANGE_NAME/*.md" \
-  "openspec/changes/archive/$CHANGE_NAME/*.md" 2>/dev/null || true)
+# 收集该 change 目录下 4 个文档的 diff（显式文件名,避免 git pathspec glob 兼容性问题）
+PATHS=()
+for base in "openspec/changes/$CHANGE_NAME" "openspec/changes/archive/$CHANGE_NAME"; do
+  for f in proposal.md design.md tasks.md tests.md; do
+    PATHS+=("$base/$f")
+  done
+done
+
+DIFF=$(git diff "$BEFORE_SHA" "$AFTER_SHA" -- "${PATHS[@]}" 2>&1 || true)
 
 if [[ -z "$DIFF" ]]; then
-  echo "No diff for $CHANGE_NAME" >&2
+  echo "  ⚠ summarize: no diff between $BEFORE_SHA..$AFTER_SHA for $CHANGE_NAME (paths checked: ${#PATHS[@]} files)" >&2
   exit 0
 fi
 

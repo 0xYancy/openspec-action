@@ -165,7 +165,10 @@ for ((i=0; i<COUNT; i++)); do
   if [[ "$HAS_DOC_CHANGES" == "true" ]]; then
     SUMMARY_TEXT=""
     if [[ -n "$BEFORE_SHA" ]]; then
-      SUMMARY_TEXT=$(bash "$SCRIPT_DIR/llm-summarize.sh" "$CHANGE_NAME" "$BEFORE_SHA" "$COMMIT_SHA" 2>/dev/null || echo "")
+      # stderr 直通到 workflow 日志,便于排查重试 / 空 diff 等情况
+      SUMMARY_TEXT=$(bash "$SCRIPT_DIR/llm-summarize.sh" "$CHANGE_NAME" "$BEFORE_SHA" "$COMMIT_SHA" || echo "")
+    else
+      echo "  ⚠ summarize skipped: BEFORE_SHA empty (likely first push on branch)" >&2
     fi
     [[ -z "$SUMMARY_TEXT" ]] && SUMMARY_TEXT="• 文档已更新（自动摘要不可用）"
 
