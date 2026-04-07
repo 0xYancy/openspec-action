@@ -35,22 +35,27 @@ normalize_status() {
   local value
   value=$(printf '%s' "$raw" | tr -d '"' | xargs)
 
+  # 注：openspec 框架仍输出"草稿/产品设计中/待开发/开发中/完成",
+  # Notion 侧选项已迁移为"待启动/需求探索中/待开发/开发中/完成",此处做翻译
   case "$value" in
     ""|null|NULL|未设置)
       if [[ "$change_path" == archive/* ]]; then
         echo "完成"
       else
-        echo "草稿"
+        echo "待启动"
       fi
       ;;
-    草稿|draft|Draft)
-      echo "草稿"
+    草稿|待启动|draft|Draft)
+      echo "待启动"
+      ;;
+    产品设计中|需求探索中|设计中|design|Design)
+      echo "需求探索中"
+      ;;
+    待开发|todo|TODO|To-Do)
+      echo "待开发"
       ;;
     进行中|开发中|in-progress|In-Progress|in_progress|doing|Doing)
       echo "开发中"
-      ;;
-    产品设计中|设计中|design|Design)
-      echo "产品设计中"
       ;;
     完成|已完成|done|Done|completed|Completed)
       echo "完成"
