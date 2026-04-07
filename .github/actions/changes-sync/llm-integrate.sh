@@ -75,6 +75,9 @@ while (( attempt < max_attempts )); do
 
   CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
   if [[ -n "$CONTENT" ]]; then
+    if (( attempt > 1 )); then
+      echo "  ✓ OpenRouter integrate succeeded on attempt $attempt" >&2
+    fi
     echo "$CONTENT"
     exit 0
   fi
@@ -83,7 +86,7 @@ while (( attempt < max_attempts )); do
   ERR_DETAIL=$(echo "$RESP" | jq -c '.error // empty' 2>/dev/null || echo "")
   echo "  ⚠ OpenRouter integrate attempt $attempt failed: $ERR" >&2
   [[ -n "$ERR_DETAIL" ]] && echo "    detail: $ERR_DETAIL" >&2
-  sleep 2
+  sleep 5
 done
 
 echo "  ✗ OpenRouter integrate failed after $max_attempts attempts" >&2
