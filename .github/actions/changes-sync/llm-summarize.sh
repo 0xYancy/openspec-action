@@ -11,7 +11,7 @@ BEFORE_SHA=$2
 AFTER_SHA=$3
 
 : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
-: "${OPENROUTER_MODEL:?OPENROUTER_MODEL is required}"
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-stepfun/step-3.5-flash:free}"
 
 # 收集该 change 目录下所有 .md 文件的 diff
 DIFF=$(git diff "$BEFORE_SHA" "$AFTER_SHA" -- \

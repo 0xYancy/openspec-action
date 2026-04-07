@@ -10,9 +10,12 @@
 #   BRANCH             分支名
 #   COMMIT_SHA         本次 commit SHA
 #   BEFORE_SHA         上一个 commit SHA（用于 diff）
-#   NOTION_API_KEY / NOTION_VERSION / NOTION_TASK_DB_ID / NOTION_TASK_DS_ID / NOTION_VERSION_DS_ID
-#   OPENROUTER_API_KEY / OPENROUTER_MODEL
-#   SLACK_WEBHOOK_URL
+#
+# Secrets（必需）：
+#   NOTION_API_KEY、OPENROUTER_API_KEY、SLACK_WEBHOOK_URL
+#
+# 公开 ID（已硬编码默认值，可 env 覆盖）：
+#   NOTION_VERSION、NOTION_TASK_DB_ID、NOTION_TASK_DS_ID、NOTION_VERSION_DS_ID、OPENROUTER_MODEL
 
 set -uo pipefail
 
@@ -24,6 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 : "${BRANCH:?BRANCH is required}"
 : "${COMMIT_SHA:?COMMIT_SHA is required}"
 : "${BEFORE_SHA:=}"
+
+# 公开 ID 默认值（与 sync-task.sh 保持一致）
+NOTION_VERSION="${NOTION_VERSION:-2025-09-03}"
+NOTION_TASK_DS_ID="${NOTION_TASK_DS_ID:-318bc3b8-8a84-802f-af8e-000b8589126c}"
+export NOTION_VERSION NOTION_TASK_DS_ID
 
 COMMIT_SHORT=$(echo "$COMMIT_SHA" | cut -c1-7)
 

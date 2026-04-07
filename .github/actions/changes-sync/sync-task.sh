@@ -3,21 +3,20 @@
 # 用法: echo '{"change":"xxx","title":"xxx",...}' | ./sync-task.sh <repo> <branch>
 #
 # 凭据从环境变量读取（不再使用 config.json）：
-#   NOTION_API_KEY        Notion integration token
-#   NOTION_VERSION        Notion API version (e.g. 2022-06-28)
-#   NOTION_TASK_DB_ID     Task database ID
-#   NOTION_TASK_DS_ID     Task data source ID
-#   NOTION_VERSION_DS_ID  Version data source ID
+#   NOTION_API_KEY        Notion integration token (必需，secret)
+#   其余 ID 均为公开 ID，已硬编码默认值，可通过 env 覆盖
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 : "${NOTION_API_KEY:?NOTION_API_KEY is required}"
-: "${NOTION_VERSION:?NOTION_VERSION is required}"
-: "${NOTION_TASK_DB_ID:?NOTION_TASK_DB_ID is required}"
-: "${NOTION_TASK_DS_ID:?NOTION_TASK_DS_ID is required}"
-: "${NOTION_VERSION_DS_ID:?NOTION_VERSION_DS_ID is required}"
+
+# 公开 ID 默认值（所有 openspec 仓库共用同一个 Notion Task 数据库）
+NOTION_VERSION="${NOTION_VERSION:-2025-09-03}"
+NOTION_TASK_DB_ID="${NOTION_TASK_DB_ID:-318bc3b8-8a84-8005-bc7e-c2ed7b4f6a40}"
+NOTION_TASK_DS_ID="${NOTION_TASK_DS_ID:-318bc3b8-8a84-802f-af8e-000b8589126c}"
+NOTION_VERSION_DS_ID="${NOTION_VERSION_DS_ID:-f9098417-055a-41f3-bdc1-1f777df6ea6c}"
 
 NOTION_KEY="$NOTION_API_KEY"
 DATABASE_ID="$NOTION_TASK_DB_ID"

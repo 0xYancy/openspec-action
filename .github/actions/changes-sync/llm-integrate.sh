@@ -8,7 +8,7 @@ set -euo pipefail
 
 CHANGE_DIR=$1
 : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
-: "${OPENROUTER_MODEL:?OPENROUTER_MODEL is required}"
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-stepfun/step-3.5-flash:free}"
 
 # 拼接四个文档为一个输入
 RAW=""

@@ -35,7 +35,7 @@ jobs:
           # ... grep + sed 从 .openspec.yaml 提取 metadata，输出 metadata / changed-files
           # 见 openspec-f/.github/workflows/openspec-sync.yml 参考实现
 
-      - uses: 0xYancy/openspec-action/.github/actions/changes-sync@v1
+      - uses: 0xYancy/openspec-action/.github/actions/changes-sync@main
         with:
           metadata: ${{ steps.meta.outputs.metadata }}
           changed-files: ${{ steps.meta.outputs.changed-files }}
@@ -45,12 +45,7 @@ jobs:
           before-sha: ${{ github.event.before }}
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          NOTION_VERSION: ${{ secrets.NOTION_VERSION }}
-          NOTION_TASK_DB_ID: ${{ secrets.NOTION_TASK_DB_ID }}
-          NOTION_TASK_DS_ID: ${{ secrets.NOTION_TASK_DS_ID }}
-          NOTION_VERSION_DS_ID: ${{ secrets.NOTION_VERSION_DS_ID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
@@ -65,25 +60,27 @@ jobs:
 | `commit-sha` | ✅ | 本次 commit SHA |
 | `before-sha` | ❌ | 上一个 commit SHA，用于计算 Slack 摘要的 diff |
 
-## 必需的环境变量（Secrets / Variables）
+## 必需的 Secrets
 
-调用方仓库需要在 GitHub repo settings 中配置：
+调用方仓库需要在 GitHub repo settings 中配置以下 3 个 secret：
 
-### Secrets
 | 名称 | 说明 |
 |-----|-----|
 | `NOTION_API_KEY` | Notion integration token |
-| `NOTION_VERSION` | Notion API version（如 `2022-06-28`） |
-| `NOTION_TASK_DB_ID` | Task 数据库 ID |
-| `NOTION_TASK_DS_ID` | Task data source ID |
-| `NOTION_VERSION_DS_ID` | Version data source ID |
-| `OPENROUTER_API_KEY` | OpenRouter API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key（用 `:free` 模型零成本） |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook URL |
 
-### Variables
-| 名称 | 说明 |
-|-----|-----|
-| `OPENROUTER_MODEL` | OpenRouter 模型 ID（建议使用 `:free` 后缀的免费模型，如 `deepseek/deepseek-chat:free`） |
+## 可选的 env 覆盖（不配的话用脚本默认值）
+
+以下值在 `sync-task.sh` / `llm-*.sh` 内有默认硬编码（不是 secret，是公开 ID 与版本号），如需覆盖，在调用方 workflow 的 `env:` 段落里追加同名变量即可：
+
+| 名称 | 默认值 |
+|-----|-------|
+| `NOTION_VERSION` | `2025-09-03` |
+| `NOTION_TASK_DB_ID` | `318bc3b8-8a84-8005-bc7e-c2ed7b4f6a40` |
+| `NOTION_TASK_DS_ID` | `318bc3b8-8a84-802f-af8e-000b8589126c` |
+| `NOTION_VERSION_DS_ID` | `f9098417-055a-41f3-bdc1-1f777df6ea6c` |
+| `OPENROUTER_MODEL` | `stepfun/step-3.5-flash:free` |
 
 ## 行为细则
 
