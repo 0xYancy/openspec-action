@@ -8,7 +8,7 @@ set -euo pipefail
 
 CHANGE_DIR=$1
 : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
-OPENROUTER_MODEL="${OPENROUTER_MODEL:-qwen/qwen3.6-plus:free}"
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-minimax/minimax-m2.5:free}"
 
 # 拼接四个文档为一个输入
 RAW=""

@@ -11,7 +11,7 @@ BEFORE_SHA=$2
 AFTER_SHA=$3
 
 : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
-OPENROUTER_MODEL="${OPENROUTER_MODEL:-qwen/qwen3.6-plus:free}"
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-minimax/minimax-m2.5:free}"
 
 # 收集该 change 目录下 4 个文档的 diff（显式文件名,避免 git pathspec glob 兼容性问题）
 PATHS=()

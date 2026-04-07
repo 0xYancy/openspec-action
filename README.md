@@ -80,7 +80,7 @@ jobs:
 | `NOTION_TASK_DB_ID` | `318bc3b8-8a84-8005-bc7e-c2ed7b4f6a40` |
 | `NOTION_TASK_DS_ID` | `318bc3b8-8a84-802f-af8e-000b8589126c` |
 | `NOTION_VERSION_DS_ID` | `f9098417-055a-41f3-bdc1-1f777df6ea6c` |
-| `OPENROUTER_MODEL` | `qwen/qwen3.6-plus:free` |
+| `OPENROUTER_MODEL` | `minimax/minimax-m2.5:free` |
 
 ## 行为细则
 
