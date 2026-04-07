@@ -5,7 +5,7 @@
 
 支持的 block 类型:
   - heading_1 / heading_2 / heading_3
-  - bulleted_list_item / numbered_list_item
+  - bulleted_list_item / numbered_list_item (含基于缩进的嵌套)
   - code (围栏代码块 ``` ... ```)
   - paragraph (默认)
 
@@ -15,7 +15,7 @@
   - [text](url)
 
 限制:
-  - 最多 50 个 block (Notion 单次写入便利上限)
+  - 顶层最多 MAX_BLOCKS 个 block
   - 每段 rich_text content 最多 2000 字符 (Notion 硬限制)
 """
 import sys
@@ -34,7 +34,6 @@ INLINE_RE = re.compile(
 
 
 def _make_text(content, *, bold=False, code=False, link=None):
-    """构造一个 Notion rich_text 元素."""
     text_obj = {'content': content[:MAX_TEXT_LEN]}
     if link:
         text_obj['link'] = {'url': link}
@@ -57,20 +56,18 @@ def parse_inline(text):
     segments = []
     pos = 0
     for m in INLINE_RE.finditer(text):
-        # 匹配前的普通文本
         if m.start() > pos:
             segments.append(_make_text(text[pos:m.start()]))
 
-        if m.group(1) is not None:           # **bold**
+        if m.group(1) is not None:
             segments.append(_make_text(m.group(1), bold=True))
-        elif m.group(2) is not None:         # `code`
+        elif m.group(2) is not None:
             segments.append(_make_text(m.group(2), code=True))
-        elif m.group(3) is not None:         # [text](url)
+        elif m.group(3) is not None:
             segments.append(_make_text(m.group(3), link=m.group(4)))
 
         pos = m.end()
 
-    # 末尾剩余的普通文本
     if pos < len(text):
         segments.append(_make_text(text[pos:]))
 
@@ -78,7 +75,6 @@ def parse_inline(text):
 
 
 def make_block(block_type, *, rich_text=None, language=None):
-    """生成一个 Notion block 对象."""
     body = {}
     if rich_text is not None:
         body['rich_text'] = rich_text
@@ -87,11 +83,14 @@ def make_block(block_type, *, rich_text=None, language=None):
     return {'object': 'block', 'type': block_type, block_type: body}
 
 
-def main():
-    content = sys.stdin.read()
-    blocks = []
+def leading_spaces(s):
+    return len(s) - len(s.lstrip(' '))
 
-    # 围栏代码块状态机
+
+def parse_lines(content):
+    """第一阶段：把每行解析为 (indent, block, is_listitem) 元组列表."""
+    parsed = []
+
     in_code_fence = False
     code_lang = 'plain text'
     code_buffer = []
@@ -100,19 +99,18 @@ def main():
         if not code_buffer:
             return
         joined = '\n'.join(code_buffer)[:MAX_TEXT_LEN]
-        blocks.append(make_block(
+        parsed.append((0, make_block(
             'code',
             rich_text=[_make_text(joined)],
             language=code_lang,
-        ))
+        ), False))
 
     for raw_line in content.splitlines():
-        if len(blocks) >= MAX_BLOCKS:
-            break
         line = raw_line.rstrip()
+        stripped = line.lstrip(' ')
 
-        # 围栏代码块开始/结束
-        fence_match = re.match(r'^```(\w*)\s*$', line)
+        # 围栏代码块开始/结束（允许前面有空格）
+        fence_match = re.match(r'^```(\w*)\s*$', stripped)
         if fence_match:
             if in_code_fence:
                 flush_code_block()
@@ -127,34 +125,73 @@ def main():
             code_buffer.append(raw_line)
             continue
 
-        # 跳过空行
-        if not line:
+        if not stripped:
             continue
 
-        # heading
-        if line.startswith('### '):
-            blocks.append(make_block('heading_3', rich_text=parse_inline(line[4:].strip())))
-        elif line.startswith('## '):
-            blocks.append(make_block('heading_2', rich_text=parse_inline(line[3:].strip())))
-        elif line.startswith('# '):
-            blocks.append(make_block('heading_1', rich_text=parse_inline(line[2:].strip())))
-        # 有序列表 1. 2. 3.
-        elif re.match(r'^\d+\.\s+', line):
-            text = re.sub(r'^\d+\.\s+', '', line)
-            blocks.append(make_block('numbered_list_item', rich_text=parse_inline(text)))
-        # 无序列表 - 或 *
-        elif line.startswith(('- ', '* ')):
-            blocks.append(make_block('bulleted_list_item', rich_text=parse_inline(line[2:].strip())))
-        # 表格行（Notion 不支持原生 markdown 表格，降级为段落）
-        elif line.startswith('| ') or line.startswith('|--'):
-            blocks.append(make_block('paragraph', rich_text=parse_inline(line.strip())))
-        else:
-            blocks.append(make_block('paragraph', rich_text=parse_inline(line)))
+        indent = leading_spaces(line)
 
-    # 文档结尾仍在代码块中（异常情况，仍尝试输出）
-    if in_code_fence and code_buffer and len(blocks) < MAX_BLOCKS:
+        if stripped.startswith('### '):
+            parsed.append((0, make_block(
+                'heading_3', rich_text=parse_inline(stripped[4:].strip())), False))
+        elif stripped.startswith('## '):
+            parsed.append((0, make_block(
+                'heading_2', rich_text=parse_inline(stripped[3:].strip())), False))
+        elif stripped.startswith('# '):
+            parsed.append((0, make_block(
+                'heading_1', rich_text=parse_inline(stripped[2:].strip())), False))
+        elif re.match(r'^\d+\.\s+', stripped):
+            text = re.sub(r'^\d+\.\s+', '', stripped)
+            parsed.append((indent, make_block(
+                'numbered_list_item', rich_text=parse_inline(text)), True))
+        elif stripped.startswith(('- ', '* ')):
+            parsed.append((indent, make_block(
+                'bulleted_list_item', rich_text=parse_inline(stripped[2:].strip())), True))
+        elif stripped.startswith('| ') or stripped.startswith('|--'):
+            parsed.append((0, make_block(
+                'paragraph', rich_text=parse_inline(stripped)), False))
+        else:
+            parsed.append((0, make_block(
+                'paragraph', rich_text=parse_inline(stripped)), False))
+
+    if in_code_fence and code_buffer:
         flush_code_block()
 
+    return parsed
+
+
+def build_tree(parsed):
+    """第二阶段：基于缩进把 list item 嵌套为 Notion children 树."""
+    blocks = []
+    stack = []  # list of (indent, block_ref)
+
+    for indent, block, is_listitem in parsed:
+        if not is_listitem:
+            # 非列表项重置嵌套栈
+            stack = []
+            blocks.append(block)
+            continue
+
+        # 弹出栈中所有缩进 >= 当前缩进的项（兄弟或祖先节点）
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+        if stack:
+            # 当前 item 是栈顶 item 的子节点
+            _, parent = stack[-1]
+            parent_body = parent[parent['type']]
+            parent_body.setdefault('children', []).append(block)
+        else:
+            blocks.append(block)
+
+        stack.append((indent, block))
+
+    return blocks[:MAX_BLOCKS]
+
+
+def main():
+    content = sys.stdin.read()
+    parsed = parse_lines(content)
+    blocks = build_tree(parsed)
     print(json.dumps(blocks, ensure_ascii=False))
 
 
