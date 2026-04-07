@@ -49,13 +49,19 @@ PROMPT_EOF
 FULL_INPUT="${PROMPT}
 ${RAW}"
 
-# 构造 JSON payload
+# 构造 JSON payload（含 max_tokens / temperature，部分 OpenRouter 免费模型对这些字段有强制要求）
 PAYLOAD=$(jq -n \
   --arg model "$OPENROUTER_MODEL" \
   --arg content "$FULL_INPUT" \
-  '{model: $model, messages: [{role: "user", content: $content}]}')
+  '{
+    model: $model,
+    messages: [{role: "user", content: $content}],
+    max_tokens: 4096,
+    temperature: 0.3
+  }')
 
 # 调用 OpenRouter，最多重试 2 次
+# HTTP-Referer / X-Title 用于在 OpenRouter 后台标识来源（部分免费 provider 会校验）
 attempt=0
 max_attempts=3
 while (( attempt < max_attempts )); do
@@ -63,6 +69,8 @@ while (( attempt < max_attempts )); do
   RESP=$(curl -sS -X POST "https://openrouter.ai/api/v1/chat/completions" \
     -H "Authorization: Bearer $OPENROUTER_API_KEY" \
     -H "Content-Type: application/json" \
+    -H "HTTP-Referer: https://github.com/0xYancy/openspec-action" \
+    -H "X-Title: openspec-action changes-sync" \
     -d "$PAYLOAD" || echo '{}')
 
   CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
@@ -72,7 +80,9 @@ while (( attempt < max_attempts )); do
   fi
 
   ERR=$(echo "$RESP" | jq -r '.error.message // .error // "no content returned"')
+  ERR_DETAIL=$(echo "$RESP" | jq -c '.error // empty' 2>/dev/null || echo "")
   echo "  ⚠ OpenRouter integrate attempt $attempt failed: $ERR" >&2
+  [[ -n "$ERR_DETAIL" ]] && echo "    detail: $ERR_DETAIL" >&2
   sleep 2
 done
 
