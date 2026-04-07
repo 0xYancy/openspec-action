@@ -68,16 +68,16 @@ normalize_priority() {
 
   case "$value" in
     ""|null|NULL|未设置)
-      echo "中"
+      echo "P1"
       ;;
     P0|高|High|high)
-      echo "高"
+      echo "P0"
       ;;
     P1|中|Medium|medium)
-      echo "中"
+      echo "P1"
       ;;
     P2|低|Low|low)
-      echo "低"
+      echo "P2"
       ;;
     *)
       echo "$value"
