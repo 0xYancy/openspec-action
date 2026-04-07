@@ -1,0 +1,51 @@
+name: 'OpenSpec Changes Sync'
+description: '将 openspec changes 元数据与文档同步到 Notion Task 数据库，并向 Slack 发送文档更新通知'
+author: '0xYancy'
+
+inputs:
+  metadata:
+    description: 'JSON 数组：本次 push 涉及的 change 元数据（由调用方 workflow 用 grep + sed 提取构造）'
+    required: true
+  changed-files:
+    description: '空格分隔的本次 push 涉及的所有文件路径（来自 git diff --name-only）'
+    required: true
+  repo:
+    description: 'owner/name 仓库标识'
+    required: true
+  branch:
+    description: '分支名'
+    required: true
+  commit-sha:
+    description: '本次 push 的 commit SHA'
+    required: true
+  before-sha:
+    description: '上一个 commit SHA（用于 diff 计算 Slack 摘要）'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Ensure dependencies
+      shell: bash
+      run: |
+        # GitHub-hosted ubuntu runner 默认带 jq / python3 / curl / git，这里仅做存在性检查
+        for bin in jq python3 curl git; do
+          if ! command -v "$bin" >/dev/null 2>&1; then
+            echo "Required binary $bin not found in PATH"
+            exit 1
+          fi
+        done
+
+    - name: Run changes sync
+      shell: bash
+      env:
+        METADATA: ${{ inputs.metadata }}
+        CHANGED_FILES: ${{ inputs.changed-files }}
+        REPO: ${{ inputs.repo }}
+        BRANCH: ${{ inputs.branch }}
+        COMMIT_SHA: ${{ inputs.commit-sha }}
+        BEFORE_SHA: ${{ inputs.before-sha }}
+      run: |
+        chmod +x "${{ github.action_path }}"/*.sh
+        bash "${{ github.action_path }}/run.sh"
