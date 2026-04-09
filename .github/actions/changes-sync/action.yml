@@ -22,6 +22,20 @@ inputs:
     description: '上一个 commit SHA（用于 diff 计算 Slack 摘要）'
     required: false
     default: ''
+  notion-api-key:
+    description: 'Notion API key（写入 Task 数据库）'
+    required: true
+  openrouter-api-key:
+    description: 'OpenRouter API key（LLM 整理/摘要文档）'
+    required: true
+  openrouter-model:
+    description: 'OpenRouter 模型名（可选，默认 minimax/minimax-m2.5:free）'
+    required: false
+    default: ''
+  slack-webhook-url:
+    description: 'Slack incoming webhook URL（文档更新通知）'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -46,6 +60,10 @@ runs:
         BRANCH: ${{ inputs.branch }}
         COMMIT_SHA: ${{ inputs.commit-sha }}
         BEFORE_SHA: ${{ inputs.before-sha }}
+        NOTION_API_KEY: ${{ inputs.notion-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        OPENROUTER_MODEL: ${{ inputs.openrouter-model }}
+        SLACK_WEBHOOK_URL: ${{ inputs.slack-webhook-url }}
       run: |
         chmod +x "${{ github.action_path }}"/*.sh
         bash "${{ github.action_path }}/run.sh"
