@@ -1,7 +1,8 @@
 #!/bin/bash
-# slack-notify.sh - 向 Slack webhook 发送一条 change 文档更新通知
+# slack-notify.sh - 向 Slack 发送一条 change 文档更新通知
+# 优先使用 Bot Token (chat.postMessage)，fallback 到 Webhook
 # 用法: ./slack-notify.sh <repo> <branch> <commit-short> <change-title> <changed-files-csv> <assignee> <notion-page-url> <summary-text>
-# 凭据: SLACK_WEBHOOK_URL (env)
+# 凭据: SLACK_BOT_TOKEN + SLACK_CHANNEL (优先) 或 SLACK_WEBHOOK_URL (兼容)
 
 set -euo pipefail
 
@@ -14,7 +15,12 @@ ASSIGNEE=$6
 NOTION_URL=$7
 SUMMARY=$8
 
-: "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL is required}"
+SLACK_CHANNEL="C0ARQG0J3LM"
+
+if [[ -z "${SLACK_BOT_TOKEN:-}" && -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+  echo "  ⚠ Slack notify skipped: neither SLACK_BOT_TOKEN nor SLACK_WEBHOOK_URL set" >&2
+  exit 0
+fi
 
 # assignee → Slack User ID 映射
 declare -A SLACK_IDS=(
@@ -46,7 +52,7 @@ if [[ -n "$ASSIGNEE" ]]; then
   fi
 fi
 
-# 构造文本（与原 SKILL.md Step 5 格式一致）
+# 构造文本
 NOTION_LINE=""
 [[ -n "$NOTION_URL" ]] && NOTION_LINE="
 🔗 ${NOTION_URL}"
@@ -61,17 +67,48 @@ ${SUMMARY}
 ${NOTION_LINE}
 ${MENTION}"
 
-PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+# ── 发送方式：Bot Token 优先，Webhook 兜底 ──
 
-HTTP_CODE=$(curl -sS -o /tmp/slack_resp.txt -w "%{http_code}" -X POST \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD" \
-  "$SLACK_WEBHOOK_URL" || echo "000")
+if [[ -n "${SLACK_BOT_TOKEN:-}" ]]; then
+  # Bot Token 方式：chat.postMessage
+  PAYLOAD=$(jq -n --arg ch "$SLACK_CHANNEL" --arg text "$TEXT" \
+    '{channel: $ch, text: $text}')
 
-if [[ "$HTTP_CODE" == "200" ]]; then
-  echo "  ✓ Slack notified"
-else
-  RESP_BODY=$(cat /tmp/slack_resp.txt 2>/dev/null || echo "(no body)")
-  echo "  ⚠ Slack notify failed (HTTP $HTTP_CODE): $RESP_BODY" >&2
-  # 不阻断 workflow
+  HTTP_CODE=$(curl -sS -o /tmp/slack_resp.txt -w "%{http_code}" -X POST \
+    "https://slack.com/api/chat.postMessage" \
+    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" || echo "000")
+
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    OK=$(jq -r '.ok' /tmp/slack_resp.txt 2>/dev/null || echo "false")
+    if [[ "$OK" == "true" ]]; then
+      echo "  ✓ Slack notified (bot)"
+      exit 0
+    else
+      ERR=$(jq -r '.error // "unknown"' /tmp/slack_resp.txt 2>/dev/null || echo "unknown")
+      echo "  ⚠ Slack bot API error: $ERR" >&2
+    fi
+  else
+    RESP_BODY=$(cat /tmp/slack_resp.txt 2>/dev/null || echo "(no body)")
+    echo "  ⚠ Slack bot HTTP $HTTP_CODE: $RESP_BODY" >&2
+  fi
+  exit 1
+fi
+
+# Webhook 方式（兼容旧配置）
+if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+  PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+
+  HTTP_CODE=$(curl -sS -o /tmp/slack_resp.txt -w "%{http_code}" -X POST \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" \
+    "$SLACK_WEBHOOK_URL" || echo "000")
+
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    echo "  ✓ Slack notified (webhook)"
+  else
+    RESP_BODY=$(cat /tmp/slack_resp.txt 2>/dev/null || echo "(no body)")
+    echo "  ⚠ Slack webhook failed (HTTP $HTTP_CODE): $RESP_BODY" >&2
+  fi
 fi

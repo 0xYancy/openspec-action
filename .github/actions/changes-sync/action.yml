@@ -33,7 +33,11 @@ inputs:
     required: false
     default: ''
   slack-webhook-url:
-    description: 'Slack incoming webhook URL（文档更新通知）'
+    description: '(已废弃，改用 slack-bot-token) Slack incoming webhook URL'
+    required: false
+    default: ''
+  slack-bot-token:
+    description: 'Slack Bot User OAuth Token（xoxb-...，用于 chat.postMessage 发送通知）'
     required: false
     default: ''
 
@@ -64,6 +68,7 @@ runs:
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
         OPENROUTER_MODEL: ${{ inputs.openrouter-model }}
         SLACK_WEBHOOK_URL: ${{ inputs.slack-webhook-url }}
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
       run: |
         chmod +x "${{ github.action_path }}"/*.sh
         bash "${{ github.action_path }}/run.sh"
