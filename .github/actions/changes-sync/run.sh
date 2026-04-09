@@ -67,10 +67,15 @@ for ((i=0; i<COUNT; i++)); do
   echo "──────────── $CHANGE_NAME ────────────"
 
   # 定位 change 目录（active 或 archive）
+  # 同时兼容两种仓库布局：标准 openspec/changes/ 与根布局 changes/
   if [[ -d "openspec/changes/$CHANGE_NAME" ]]; then
     CHANGE_DIR="openspec/changes/$CHANGE_NAME"
+  elif [[ -d "changes/$CHANGE_NAME" ]]; then
+    CHANGE_DIR="changes/$CHANGE_NAME"
   elif [[ -d "openspec/changes/archive/$CHANGE_NAME" ]]; then
     CHANGE_DIR="openspec/changes/archive/$CHANGE_NAME"
+  elif [[ -d "changes/archive/$CHANGE_NAME" ]]; then
+    CHANGE_DIR="changes/archive/$CHANGE_NAME"
   else
     echo "  ✗ Change directory not found"
     echo "| $CHANGE_NAME | $TITLE | ✗ dir not found | — | — |" >> "$SUMMARY_FILE"

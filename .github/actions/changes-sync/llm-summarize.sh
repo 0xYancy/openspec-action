@@ -14,8 +14,14 @@ AFTER_SHA=$3
 OPENROUTER_MODEL="${OPENROUTER_MODEL:-minimax/minimax-m2.5:free}"
 
 # 收集该 change 目录下 4 个文档的 diff（显式文件名,避免 git pathspec glob 兼容性问题）
+# 同时兼容两种仓库布局：标准 openspec/changes/ 与根布局 changes/
+# git diff 会自动忽略不存在的路径，所以全部列出即可
 PATHS=()
-for base in "openspec/changes/$CHANGE_NAME" "openspec/changes/archive/$CHANGE_NAME"; do
+for base in \
+  "openspec/changes/$CHANGE_NAME" \
+  "openspec/changes/archive/$CHANGE_NAME" \
+  "changes/$CHANGE_NAME" \
+  "changes/archive/$CHANGE_NAME"; do
   for f in proposal.md design.md tasks.md tests.md; do
     PATHS+=("$base/$f")
   done
