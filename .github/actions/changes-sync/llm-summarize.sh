@@ -11,7 +11,12 @@ BEFORE_SHA=$2
 AFTER_SHA=$3
 
 : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
-OPENROUTER_MODEL="${OPENROUTER_MODEL:-minimax/minimax-m2.5:free}"
+
+# OPENROUTER_MODEL 支持逗号分隔的多个模型，按顺序作为 fallback
+# 默认列表覆盖几个常见的 free 模型，单个被限流时自动切换下一个
+DEFAULT_MODELS="nvidia/nemotron-3-super-120b-a12b:free,minimax/minimax-m2.5:free,z-ai/glm-4.5-air:free,google/gemma-4-31b-it:free"
+MODELS_RAW="${OPENROUTER_MODEL:-$DEFAULT_MODELS}"
+IFS=',' read -ra MODELS <<< "$MODELS_RAW"
 
 # 收集该 change 目录下 4 个文档的 diff（显式文件名,避免 git pathspec glob 兼容性问题）
 # 同时兼容两种仓库布局：标准 openspec/changes/ 与根布局 changes/
@@ -55,42 +60,50 @@ PROMPT_EOF
 FULL_INPUT="${PROMPT}
 ${DIFF_TRUNCATED}"
 
-PAYLOAD=$(jq -n \
-  --arg model "$OPENROUTER_MODEL" \
-  --arg content "$FULL_INPUT" \
-  '{
-    model: $model,
-    messages: [{role: "user", content: $content}],
-    max_tokens: 1024,
-    temperature: 0.3
-  }')
+# 调用 OpenRouter：按模型列表顺序 fallback，多轮重试
+max_rounds=2
+round=0
+while (( round < max_rounds )); do
+  round=$((round + 1))
+  for model in "${MODELS[@]}"; do
+    model=$(echo "$model" | xargs)  # trim 前后空白
+    [[ -z "$model" ]] && continue
 
-attempt=0
-max_attempts=3
-while (( attempt < max_attempts )); do
-  attempt=$((attempt + 1))
-  RESP=$(curl -sS -X POST "https://openrouter.ai/api/v1/chat/completions" \
-    -H "Authorization: Bearer $OPENROUTER_API_KEY" \
-    -H "Content-Type: application/json" \
-    -H "HTTP-Referer: https://github.com/0xYancy/openspec-action" \
-    -H "X-Title: openspec-action changes-sync" \
-    -d "$PAYLOAD" || echo '{}')
+    PAYLOAD=$(jq -n \
+      --arg model "$model" \
+      --arg content "$FULL_INPUT" \
+      '{
+        model: $model,
+        messages: [{role: "user", content: $content}],
+        max_tokens: 1024,
+        temperature: 0.3
+      }')
 
-  CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
-  if [[ -n "$CONTENT" ]]; then
-    if (( attempt > 1 )); then
-      echo "  ✓ OpenRouter summarize succeeded on attempt $attempt" >&2
+    RESP=$(curl -sS -X POST "https://openrouter.ai/api/v1/chat/completions" \
+      -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+      -H "Content-Type: application/json" \
+      -H "HTTP-Referer: https://github.com/0xYancy/openspec-action" \
+      -H "X-Title: openspec-action changes-sync" \
+      -d "$PAYLOAD" || echo '{}')
+
+    CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+    if [[ -n "$CONTENT" ]]; then
+      echo "  ✓ OpenRouter summarize succeeded with $model (round $round)" >&2
+      echo "$CONTENT"
+      exit 0
     fi
-    echo "$CONTENT"
-    exit 0
-  fi
 
-  ERR=$(echo "$RESP" | jq -r '.error.message // .error // "no content returned"')
-  ERR_DETAIL=$(echo "$RESP" | jq -c '.error // empty' 2>/dev/null || echo "")
-  echo "  ⚠ OpenRouter summarize attempt $attempt failed: $ERR" >&2
-  [[ -n "$ERR_DETAIL" ]] && echo "    detail: $ERR_DETAIL" >&2
-  sleep 5
+    ERR=$(echo "$RESP" | jq -r '.error.message // .error // "no content returned"')
+    ERR_DETAIL=$(echo "$RESP" | jq -c '.error // empty' 2>/dev/null || echo "")
+    echo "  ⚠ OpenRouter summarize failed with $model (round $round): $ERR" >&2
+    [[ -n "$ERR_DETAIL" ]] && echo "    detail: $ERR_DETAIL" >&2
+  done
+
+  if (( round < max_rounds )); then
+    echo "  ⏳ all models failed this round, sleeping 5s before next round..." >&2
+    sleep 5
+  fi
 done
 
-echo "  ✗ OpenRouter summarize failed after $max_attempts attempts" >&2
+echo "  ✗ OpenRouter summarize failed: exhausted ${#MODELS[@]} model(s) × $max_rounds round(s)" >&2
 exit 1
