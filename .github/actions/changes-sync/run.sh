@@ -1,7 +1,7 @@
 #!/bin/bash
 # run.sh - composite action 主入口
 # 接收 openspec-f workflow 提取好的元数据 JSON 数组与 commit 信息，
-# 对每条 change 完成：元数据同步 → 文档整合（如有文档变更）→ Notion 正文写入 → Slack 通知 → 日志输出
+# 对每条 change 完成：元数据同步 → 文档按分类直接搬运（如有文档变更）→ Notion 正文写入 → Slack 通知 → 日志输出
 #
 # 必需环境变量（由 action.yml 透传）：
 #   METADATA           JSON 数组：[{change, title, assignee, status, priority, version, deadline, estimate, ID, type, progress}, ...]
@@ -123,10 +123,28 @@ for ((i=0; i<COUNT; i++)); do
 
   CONTENT=""
   if [[ "$NEED_INTEGRATE" == "true" ]]; then
-    if INTEGRATED=$(bash "$SCRIPT_DIR/llm-integrate.sh" "$CHANGE_DIR"); then
-      CONTENT="$INTEGRATED"
+    # 直接按文档分类拼接 md 文件，不经过 LLM 整理
+    DOC_LABELS=("proposal.md:%toggle% 需求提案" "design.md:%toggle% 设计方案" "tasks.md:%toggle% 任务拆分" "tests.md:%toggle% 测试验证")
+    for entry_label in "${DOC_LABELS[@]}"; do
+      fname="${entry_label%%:*}"
+      heading="${entry_label#*:}"
+      fpath="$CHANGE_DIR/$fname"
+      if [[ -f "$fpath" ]]; then
+        doc_body=$(cat "$fpath")
+        # 跳过空文件或纯模板占位
+        if [[ -n "${doc_body// /}" ]]; then
+          CONTENT="${CONTENT}${heading}
+${doc_body}
+
+"
+        fi
+      fi
+    done
+    if [[ -z "${CONTENT// /}" ]]; then
+      echo "  ⚠ No document content found in $CHANGE_DIR"
+      CONTENT=""
     else
-      echo "  ⚠ Integration failed, syncing metadata only"
+      echo "  → Assembled docs: $(echo "${DOC_LABELS[*]}" | tr ' ' '\n' | while IFS=: read f _; do [[ -f "$CHANGE_DIR/$f" ]] && echo -n "$f "; done)"
     fi
   fi
 
