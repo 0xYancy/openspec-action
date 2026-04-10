@@ -33,21 +33,45 @@ declare -A SLACK_IDS=(
   [SuperDupont]="U02THS5LJH3"
   [Tiebing]="U05K4RG1QMB"
   [Damian]="U072X5B9PAR"
-  [Sora]="U020XGKHKF1"
-  [Janpo]="U021CG7KR27"
+  [Janpo]="U08J6UJ3X8Q"
   [Bonnie]="U02298KLM97"
   [chencheng]="U021CF4NA02"
-  [AresCui]="U047E07BT9N"
-  [hqwangningbo]="U03Q0J9FJGH"
+  [Ares]="U047E07BT9N"
+  [Ningbo]="U03Q0J9FJGH"
   [Wonder]="U073BQX4X4G"
   [Kai]="U0A5JSTVDNF"
+  [Gemma]="U073JSDQWSV"
 )
 
-# 解析 mention：assignee 在表中 → @user，否则只 @Kai 并文字标注
+# 模糊匹配 assignee → Slack User ID
+# 优先精确匹配，然后大小写不敏感匹配，最后子串匹配
+resolve_slack_id() {
+  local input="$1"
+  # 精确匹配
+  [[ -n "${SLACK_IDS[$input]:-}" ]] && echo "${SLACK_IDS[$input]}" && return
+  # 大小写不敏感匹配
+  local input_lower
+  input_lower=$(echo "$input" | tr '[:upper:]' '[:lower:]')
+  for key in "${!SLACK_IDS[@]}"; do
+    if [[ "$(echo "$key" | tr '[:upper:]' '[:lower:]')" == "$input_lower" ]]; then
+      echo "${SLACK_IDS[$key]}" && return
+    fi
+  done
+  # 子串匹配（input 包含 key 或 key 包含 input）
+  for key in "${!SLACK_IDS[@]}"; do
+    local key_lower
+    key_lower=$(echo "$key" | tr '[:upper:]' '[:lower:]')
+    if [[ "$key_lower" == *"$input_lower"* || "$input_lower" == *"$key_lower"* ]]; then
+      echo "${SLACK_IDS[$key]}" && return
+    fi
+  done
+}
+
 MENTION=""
 if [[ -n "$ASSIGNEE" ]]; then
-  if [[ -n "${SLACK_IDS[$ASSIGNEE]:-}" ]]; then
-    MENTION="<@${SLACK_IDS[$ASSIGNEE]}> <@U0A5JSTVDNF>"
+  MATCHED_ID=$(resolve_slack_id "$ASSIGNEE")
+  if [[ -n "$MATCHED_ID" ]]; then
+    MENTION="<@${MATCHED_ID}> <@U0A5JSTVDNF>"
   else
     MENTION="<@U0A5JSTVDNF> (assignee: $ASSIGNEE)"
   fi
