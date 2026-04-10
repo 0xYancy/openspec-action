@@ -83,16 +83,34 @@ for ((i=0; i<COUNT; i++)); do
     continue
   fi
 
-  # 判断本次 push 是否涉及该 change 目录下任意 .md 文件
+  # 判断本次 push 是否涉及该 change 目录下任意 .md 文件（排除纯目录移动）
   HAS_DOC_CHANGES=false
   CHANGED_DOCS=""
-  for f in proposal.md design.md tasks.md tests.md; do
-    if echo "$CHANGED_FILES" | grep -qE "(^| )$CHANGE_DIR/$f( |$)"; then
-      HAS_DOC_CHANGES=true
-      CHANGED_DOCS="${CHANGED_DOCS}${f}, "
+
+  # 检测是否为 archive 移动：旧路径在 changes/，新路径在 changes/archive/（或反向）
+  IS_MOVE_ONLY=false
+  if [[ -n "$BEFORE_SHA" ]]; then
+    # 用 --diff-filter=R 检测 rename，--find-renames=100% 只匹配纯移动（无内容修改）
+    RENAMES=$(git diff --diff-filter=R --find-renames=100% --name-only "$BEFORE_SHA" "$COMMIT_SHA" -- "*/$CHANGE_NAME/*.md" 2>/dev/null || true)
+    if [[ -n "$RENAMES" ]]; then
+      # 同时检查是否有实际内容变更（非 rename 的 modify）
+      REAL_CHANGES=$(git diff --diff-filter=M --name-only "$BEFORE_SHA" "$COMMIT_SHA" -- "$CHANGE_DIR/*.md" 2>/dev/null || true)
+      if [[ -z "$REAL_CHANGES" ]]; then
+        IS_MOVE_ONLY=true
+        echo "  → Archive move detected, skipping doc re-sync"
+      fi
     fi
-  done
-  CHANGED_DOCS=${CHANGED_DOCS%, }
+  fi
+
+  if [[ "$IS_MOVE_ONLY" == "false" ]]; then
+    for f in proposal.md design.md tasks.md tests.md; do
+      if echo "$CHANGED_FILES" | grep -qE "(^| )$CHANGE_DIR/$f( |$)"; then
+        HAS_DOC_CHANGES=true
+        CHANGED_DOCS="${CHANGED_DOCS}${f}, "
+      fi
+    done
+    CHANGED_DOCS=${CHANGED_DOCS%, }
+  fi
 
   # 判断 Notion 中是否已存在该 task（用于决定是否首次创建时拉取所有文档）
   CHANGE_ID=$(echo "$ENTRY" | jq -r '.ID // empty')
@@ -184,16 +202,21 @@ ${doc_body}
   [[ -n "$PAGE_URL" ]] && PAGE_LINK="[link]($PAGE_URL)"
   echo "| $CHANGE_NAME | $TITLE | $RESULT | ${CHANGED_DOCS:-—} | $PAGE_LINK |" >> "$SUMMARY_FILE"
 
-  # Slack 通知：仅当本次 push 真的改了该 change 的文档
-  if [[ "$HAS_DOC_CHANGES" == "true" ]]; then
+  # 从 sync 日志中提取元数据变更字段（sync-task.sh 输出格式: ✓ Updated (field1 field2)）
+  META_CHANGED_FIELDS=$(echo "$SYNC_LOG" | grep -oE '✓ Updated \(([^)]+)\)' | sed 's/.*(\(.*\))/\1/' || true)
+
+  # Slack 通知：文档变更 或 元数据变更 都发
+  if [[ "$HAS_DOC_CHANGES" == "true" || -n "$META_CHANGED_FIELDS" ]]; then
     SUMMARY_TEXT=""
-    if [[ -n "$BEFORE_SHA" ]]; then
-      # stderr 直通到 workflow 日志,便于排查重试 / 空 diff 等情况
-      SUMMARY_TEXT=$(bash "$SCRIPT_DIR/llm-summarize.sh" "$CHANGE_NAME" "$BEFORE_SHA" "$COMMIT_SHA" || echo "")
-    else
-      echo "  ⚠ summarize skipped: BEFORE_SHA empty (likely first push on branch)" >&2
+    if [[ "$HAS_DOC_CHANGES" == "true" ]]; then
+      if [[ -n "$BEFORE_SHA" ]]; then
+        # stderr 直通到 workflow 日志,便于排查重试 / 空 diff 等情况
+        SUMMARY_TEXT=$(bash "$SCRIPT_DIR/llm-summarize.sh" "$CHANGE_NAME" "$BEFORE_SHA" "$COMMIT_SHA" || echo "")
+      else
+        echo "  ⚠ summarize skipped: BEFORE_SHA empty (likely first push on branch)" >&2
+      fi
+      [[ -z "$SUMMARY_TEXT" ]] && SUMMARY_TEXT="• 文档已更新（自动摘要不可用）"
     fi
-    [[ -z "$SUMMARY_TEXT" ]] && SUMMARY_TEXT="• 文档已更新（自动摘要不可用）"
 
     bash "$SCRIPT_DIR/slack-notify.sh" \
       "$REPO" \
@@ -203,7 +226,8 @@ ${doc_body}
       "$CHANGED_DOCS" \
       "$ASSIGNEE" \
       "$PAGE_URL" \
-      "$SUMMARY_TEXT" || true
+      "$SUMMARY_TEXT" \
+      "$META_CHANGED_FIELDS" || true
   fi
 done
 
