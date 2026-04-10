@@ -33,6 +33,78 @@ MAX_TEXT_LEN = 2000
 
 TOGGLE_RE = re.compile(r'^%toggle%\s+(.+)$')
 
+# Notion API 只接受特定的语言名称，需要把常见缩写映射过去
+_NOTION_LANGUAGES = frozenset([
+    'abap', 'abc', 'agda', 'arduino', 'ascii art', 'assembly', 'bash',
+    'basic', 'bnf', 'c', 'c#', 'c++', 'clojure', 'coffeescript', 'coq',
+    'css', 'dart', 'dhall', 'diff', 'docker', 'ebnf', 'elixir', 'elm',
+    'erlang', 'f#', 'flow', 'fortran', 'gherkin', 'glsl', 'go', 'graphql',
+    'groovy', 'haskell', 'hcl', 'html', 'idris', 'java', 'javascript',
+    'json', 'julia', 'kotlin', 'latex', 'less', 'lisp', 'livescript',
+    'llvm ir', 'lua', 'makefile', 'markdown', 'markup', 'matlab',
+    'mathematica', 'mermaid', 'nix', 'notion formula', 'objective-c',
+    'ocaml', 'pascal', 'perl', 'php', 'plain text', 'powershell', 'prolog',
+    'protobuf', 'purescript', 'python', 'r', 'racket', 'reason', 'ruby',
+    'rust', 'sass', 'scala', 'scheme', 'scss', 'shell', 'smalltalk',
+    'solidity', 'sql', 'swift', 'toml', 'typescript', 'vb.net', 'verilog',
+    'vhdl', 'visual basic', 'webassembly', 'xml', 'yaml', 'java/c/c++/c#',
+])
+_LANG_ALIASES = {
+    'js': 'javascript',
+    'ts': 'typescript',
+    'py': 'python',
+    'rb': 'ruby',
+    'rs': 'rust',
+    'sh': 'shell',
+    'zsh': 'shell',
+    'fish': 'shell',
+    'yml': 'yaml',
+    'md': 'markdown',
+    'objc': 'objective-c',
+    'objective-cpp': 'c++',
+    'cplusplus': 'c++',
+    'cpp': 'c++',
+    'csharp': 'c#',
+    'cs': 'c#',
+    'fsharp': 'f#',
+    'fs': 'f#',
+    'vb': 'visual basic',
+    'tex': 'latex',
+    'dockerfile': 'docker',
+    'makefile': 'makefile',
+    'make': 'makefile',
+    'asm': 'assembly',
+    'proto': 'protobuf',
+    'sol': 'solidity',
+    'wasm': 'webassembly',
+    'kt': 'kotlin',
+    'hs': 'haskell',
+    'ex': 'elixir',
+    'exs': 'elixir',
+    'erl': 'erlang',
+    'ps1': 'powershell',
+    'psm1': 'powershell',
+    'jsx': 'javascript',
+    'tsx': 'typescript',
+    'jsonc': 'json',
+    'tf': 'hcl',
+    'graphql': 'graphql',
+    'gql': 'graphql',
+    'txt': 'plain text',
+    'text': 'plain text',
+}
+
+
+def _normalize_lang(raw):
+    if not raw:
+        return 'plain text'
+    low = raw.lower().strip()
+    if low in _NOTION_LANGUAGES:
+        return low
+    if low in _LANG_ALIASES:
+        return _LANG_ALIASES[low]
+    return 'plain text'
+
 # 行内 markdown 解析：bold / code / link，按出现顺序非贪婪匹配
 INLINE_RE = re.compile(
     r'\*\*(.+?)\*\*'             # group 1: **bold**
@@ -175,7 +247,7 @@ def parse_lines(content):
                 in_code_fence = False
             else:
                 in_code_fence = True
-                code_lang = fence_match.group(1) or 'plain text'
+                code_lang = _normalize_lang(fence_match.group(1))
             continue
 
         if in_code_fence:
