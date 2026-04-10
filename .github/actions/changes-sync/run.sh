@@ -84,32 +84,46 @@ for ((i=0; i<COUNT; i++)); do
   fi
 
   # 判断本次 push 是否涉及该 change 目录下任意 .md 文件（排除纯目录移动）
+  # archive 操作只是把目录从 changes/xxx 移到 changes/archive/xxx，文件内容不变，
+  # 但 git diff --name-only 会把新旧路径都列出来，导致误判为"文档变更"。
+  # 解决方式：逐文件比较当前内容与 BEFORE_SHA 中同名文件的内容哈希，只有真正改过的才算。
   HAS_DOC_CHANGES=false
   CHANGED_DOCS=""
 
-  # 检测是否为 archive 移动：旧路径在 changes/，新路径在 changes/archive/（或反向）
-  IS_MOVE_ONLY=false
-  if [[ -n "$BEFORE_SHA" ]]; then
-    # 用 --diff-filter=R 检测 rename，--find-renames=100% 只匹配纯移动（无内容修改）
-    RENAMES=$(git diff --diff-filter=R --find-renames=100% --name-only "$BEFORE_SHA" "$COMMIT_SHA" -- "*/$CHANGE_NAME/*.md" 2>/dev/null || true)
-    if [[ -n "$RENAMES" ]]; then
-      # 同时检查是否有实际内容变更（非 rename 的 modify）
-      REAL_CHANGES=$(git diff --diff-filter=M --name-only "$BEFORE_SHA" "$COMMIT_SHA" -- "$CHANGE_DIR/*.md" 2>/dev/null || true)
-      if [[ -z "$REAL_CHANGES" ]]; then
-        IS_MOVE_ONLY=true
-        echo "  → Archive move detected, skipping doc re-sync"
-      fi
-    fi
-  fi
+  # 构建 BEFORE_SHA 中该 change 可能存在的所有旧路径
+  OLD_PATHS=()
+  for prefix in "openspec/changes" "changes" "openspec/changes/archive" "changes/archive"; do
+    OLD_PATHS+=("${prefix}/${CHANGE_NAME}")
+  done
 
-  if [[ "$IS_MOVE_ONLY" == "false" ]]; then
-    for f in proposal.md design.md tasks.md tests.md; do
-      if echo "$CHANGED_FILES" | grep -qE "(^| )$CHANGE_DIR/$f( |$)"; then
+  for f in proposal.md design.md tasks.md tests.md; do
+    if echo "$CHANGED_FILES" | grep -qE "(^| )$CHANGE_DIR/$f( |$)"; then
+      # 文件出现在 diff 列表中，但需要检查内容是否真的变了
+      CONTENT_CHANGED=true
+
+      if [[ -n "$BEFORE_SHA" ]]; then
+        CUR_HASH=$(git hash-object "$CHANGE_DIR/$f" 2>/dev/null || true)
+        if [[ -n "$CUR_HASH" ]]; then
+          for old_dir in "${OLD_PATHS[@]}"; do
+            OLD_HASH=$(git rev-parse "$BEFORE_SHA:${old_dir}/${f}" 2>/dev/null || true)
+            if [[ "$CUR_HASH" == "$OLD_HASH" ]]; then
+              CONTENT_CHANGED=false
+              break
+            fi
+          done
+        fi
+      fi
+
+      if [[ "$CONTENT_CHANGED" == "true" ]]; then
         HAS_DOC_CHANGES=true
         CHANGED_DOCS="${CHANGED_DOCS}${f}, "
       fi
-    done
-    CHANGED_DOCS=${CHANGED_DOCS%, }
+    fi
+  done
+  CHANGED_DOCS=${CHANGED_DOCS%, }
+
+  if [[ "$HAS_DOC_CHANGES" == "false" ]] && echo "$CHANGED_FILES" | grep -qE "(^| )(openspec/)?changes/(archive/)?$CHANGE_NAME/"; then
+    echo "  → Directory move detected (content unchanged), skipping doc re-sync"
   fi
 
   # 判断 Notion 中是否已存在该 task（用于决定是否首次创建时拉取所有文档）
