@@ -77,17 +77,24 @@ if [[ -n "$ASSIGNEE" ]]; then
   fi
 fi
 
-# 元数据变更字段翻译
+# 元数据变更解析（格式: field|旧值|新值，多条换行分隔）
 declare -A FIELD_LABELS=(
   [title]="标题" [status]="状态" [type]="类型" [priority]="优先级"
   [estimate]="工时" [version]="版本" [assignee]="负责人" [branch]="分支"
 )
-META_TAGS=""
+META_DETAIL=""   # Block Kit mrkdwn 格式: "• 状态: 待开发 → 开发中"
+META_PLAIN=""    # 纯文本 fallback
 if [[ -n "$META_FIELDS" ]]; then
-  for f in $META_FIELDS; do
-    label="${FIELD_LABELS[$f]:-$f}"
-    META_TAGS="${META_TAGS}\`${label}\`  "
-  done
+  while IFS= read -r diff_line; do
+    [[ -z "$diff_line" ]] && continue
+    field=$(echo "$diff_line" | cut -d'|' -f1)
+    old_val=$(echo "$diff_line" | cut -d'|' -f2)
+    new_val=$(echo "$diff_line" | cut -d'|' -f3)
+    label="${FIELD_LABELS[$field]:-$field}"
+    META_DETAIL="${META_DETAIL}• *${label}*:  ${old_val}  →  ${new_val}\n"
+    META_PLAIN="${META_PLAIN}• ${label}: ${old_val} → ${new_val}
+"
+  done <<< "$META_FIELDS"
 fi
 
 # GitHub commit URL
@@ -137,8 +144,8 @@ build_blocks() {
   fi
 
   # 元数据变更区域
-  if [[ -n "$META_TAGS" ]]; then
-    blocks=$(echo "$blocks" | jq --arg m "$META_TAGS" \
+  if [[ -n "$META_DETAIL" ]]; then
+    blocks=$(echo "$blocks" | jq --arg m "$META_DETAIL" \
       '. + [{"type":"section","text":{"type":"mrkdwn","text":("*元数据变更*\n" + $m)}}]')
   fi
 
@@ -173,9 +180,10 @@ build_fallback_text() {
     text="${text}
 🔄 ${TITLE} 任务信息更新"
   fi
-  if [[ -n "$META_TAGS" ]]; then
+  if [[ -n "$META_PLAIN" ]]; then
     text="${text}
-元数据变更：$(echo "$META_TAGS" | sed 's/`//g')"
+元数据变更：
+${META_PLAIN}"
   fi
   [[ -n "$NOTION_URL" ]] && text="${text}
 🔗 ${NOTION_URL}"

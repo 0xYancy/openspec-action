@@ -173,6 +173,15 @@ if [[ -n "$existing" ]]; then
   cur_assignee=$(echo "$current" | jq -r '.properties.Assignee.people[0].id // empty')
   cur_branch=$(echo "$current"   | jq -r '.properties.Branch.rich_text[0].plain_text // empty')
 
+  # 获取可读的 assignee 名称（从 Notion user 列表解析）
+  cur_assignee_name=""
+  if [[ -n "$cur_assignee" ]]; then
+    cur_assignee_name=$(curl -s "https://api.notion.com/v1/users/$cur_assignee" \
+      -H "Authorization: Bearer $NOTION_KEY" \
+      -H "Notion-Version: $NOTION_VERSION" \
+      | jq -r '.name // empty')
+  fi
+
   update_props='{}'
   changed_fields=()
 
@@ -180,41 +189,49 @@ if [[ -n "$existing" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$title" \
       '. + {"Title": {"title": [{"text": {"content": $v}}]}}')
     changed_fields+=("title")
+    echo "META_DIFF=title|${cur_title:-空}|${title}" >&2
   fi
   if [[ "$cur_status" != "$status" && "$cur_status" != "完成" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$status" \
       '. + {"Status": {"status": {"name": $v}}}')
     changed_fields+=("status")
+    echo "META_DIFF=status|${cur_status:-空}|${status}" >&2
   fi
   if [[ "$cur_type" != "$type" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$type" \
       '. + {"Type": {"select": {"name": $v}}}')
     changed_fields+=("type")
+    echo "META_DIFF=type|${cur_type:-空}|${type}" >&2
   fi
   if [[ "$cur_priority" != "$priority" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$priority" \
       '. + {"Priority": {"select": {"name": $v}}}')
     changed_fields+=("priority")
+    echo "META_DIFF=priority|${cur_priority:-空}|${priority}" >&2
   fi
   if [[ "$cur_estimate" != "$estimate" && -z "$cur_estimate" && -n "$estimate" ]]; then
     update_props=$(echo "$update_props" | jq --argjson v "$estimate" \
       '. + {"Estimate": {"number": $v}}')
     changed_fields+=("estimate")
+    echo "META_DIFF=estimate|${cur_estimate:-空}|${estimate}" >&2
   fi
   if [[ "$cur_version" != "$version_id" && -n "$version_id" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$version_id" \
       '. + {"Version": {"relation": [{"id": $v}]}}')
     changed_fields+=("version")
+    echo "META_DIFF=version|${cur_version:-空}|${version}" >&2
   fi
   if [[ "$cur_assignee" != "$assignee_id" && -n "$assignee_id" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$assignee_id" \
       '. + {"Assignee": {"people": [{"id": $v}]}}')
     changed_fields+=("assignee")
+    echo "META_DIFF=assignee|${cur_assignee_name:-空}|${assignee}" >&2
   fi
   if [[ "$cur_branch" != "$BRANCH" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$BRANCH" \
       '. + {"Branch": {"rich_text": [{"text": {"content": $v}}]}}')
     changed_fields+=("branch")
+    echo "META_DIFF=branch|${cur_branch:-空}|${BRANCH}" >&2
   fi
 
   if [[ ${#changed_fields[@]} -eq 0 && -z "$content" ]]; then

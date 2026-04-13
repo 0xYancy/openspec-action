@@ -216,11 +216,11 @@ ${doc_body}
   [[ -n "$PAGE_URL" ]] && PAGE_LINK="[link]($PAGE_URL)"
   echo "| $CHANGE_NAME | $TITLE | $RESULT | ${CHANGED_DOCS:-—} | $PAGE_LINK |" >> "$SUMMARY_FILE"
 
-  # 从 sync 日志中提取元数据变更字段（sync-task.sh 输出格式: ✓ Updated (field1 field2)）
-  META_CHANGED_FIELDS=$(echo "$SYNC_LOG" | grep -oE '✓ Updated \(([^)]+)\)' | sed 's/.*(\(.*\))/\1/' || true)
+  # 从 sync 日志中提取元数据变更详情（sync-task.sh 输出格式: META_DIFF=field|old|new）
+  META_DIFFS=$(echo "$SYNC_LOG" | grep -oE 'META_DIFF=[^[:space:]]+' | sed 's/^META_DIFF=//' || true)
 
   # Slack 通知：文档变更 或 元数据变更 都发
-  if [[ "$HAS_DOC_CHANGES" == "true" || -n "$META_CHANGED_FIELDS" ]]; then
+  if [[ "$HAS_DOC_CHANGES" == "true" || -n "$META_DIFFS" ]]; then
     SUMMARY_TEXT=""
     if [[ "$HAS_DOC_CHANGES" == "true" ]]; then
       if [[ -n "$BEFORE_SHA" ]]; then
@@ -241,7 +241,7 @@ ${doc_body}
       "$ASSIGNEE" \
       "$PAGE_URL" \
       "$SUMMARY_TEXT" \
-      "$META_CHANGED_FIELDS" || true
+      "$META_DIFFS" || true
   fi
 done
 
