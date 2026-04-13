@@ -91,7 +91,8 @@ if [[ -n "$META_FIELDS" ]]; then
     old_val=$(echo "$diff_line" | cut -d'|' -f2)
     new_val=$(echo "$diff_line" | cut -d'|' -f3)
     label="${FIELD_LABELS[$field]:-$field}"
-    META_DETAIL="${META_DETAIL}• *${label}*:  ${old_val}  →  ${new_val}\n"
+    META_DETAIL="${META_DETAIL}• *${label}*:  ${old_val}  →  ${new_val}
+"
     META_PLAIN="${META_PLAIN}• ${label}: ${old_val} → ${new_val}
 "
   done <<< "$META_FIELDS"

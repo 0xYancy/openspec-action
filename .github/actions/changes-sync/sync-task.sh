@@ -219,7 +219,15 @@ if [[ -n "$existing" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$version_id" \
       '. + {"Version": {"relation": [{"id": $v}]}}')
     changed_fields+=("version")
-    echo "META_DIFF=version|${cur_version:-空}|${version}" >&2
+    # 解析旧版本 page ID 为可读版本号
+    cur_version_name=""
+    if [[ -n "$cur_version" ]]; then
+      cur_version_name=$(curl -s "https://api.notion.com/v1/pages/$cur_version" \
+        -H "Authorization: Bearer $NOTION_KEY" \
+        -H "Notion-Version: $NOTION_VERSION" \
+        | jq -r '.properties["版本号"].title[0].plain_text // .properties.Name.title[0].plain_text // empty' 2>/dev/null) || true
+    fi
+    echo "META_DIFF=version|${cur_version_name:-空}|${version}" >&2
   fi
   if [[ "$cur_assignee" != "$assignee_id" && -n "$assignee_id" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$assignee_id" \
