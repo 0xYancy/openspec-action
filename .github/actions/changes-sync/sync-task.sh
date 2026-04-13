@@ -173,13 +173,13 @@ if [[ -n "$existing" ]]; then
   cur_assignee=$(echo "$current" | jq -r '.properties.Assignee.people[0].id // empty')
   cur_branch=$(echo "$current"   | jq -r '.properties.Branch.rich_text[0].plain_text // empty')
 
-  # 获取可读的 assignee 名称（从 Notion user 列表解析）
+  # 获取可读的 assignee 名称（从 Notion user 列表解析，失败时不阻塞主流程）
   cur_assignee_name=""
   if [[ -n "$cur_assignee" ]]; then
     cur_assignee_name=$(curl -s "https://api.notion.com/v1/users/$cur_assignee" \
       -H "Authorization: Bearer $NOTION_KEY" \
       -H "Notion-Version: $NOTION_VERSION" \
-      | jq -r '.name // empty')
+      | jq -r '.name // empty' 2>/dev/null) || true
   fi
 
   update_props='{}'

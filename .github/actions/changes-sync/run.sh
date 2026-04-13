@@ -217,7 +217,8 @@ ${doc_body}
   echo "| $CHANGE_NAME | $TITLE | $RESULT | ${CHANGED_DOCS:-—} | $PAGE_LINK |" >> "$SUMMARY_FILE"
 
   # 从 sync 日志中提取元数据变更详情（sync-task.sh 输出格式: META_DIFF=field|old|new）
-  META_DIFFS=$(echo "$SYNC_LOG" | grep -oE 'META_DIFF=[^[:space:]]+' | sed 's/^META_DIFF=//' || true)
+  # 用 grep 整行匹配再 sed 提取，避免值含空格时被截断
+  META_DIFFS=$(echo "$SYNC_LOG" | grep '^META_DIFF=' | sed 's/^META_DIFF=//' || true)
 
   # Slack 通知：文档变更 或 元数据变更 都发
   if [[ "$HAS_DOC_CHANGES" == "true" || -n "$META_DIFFS" ]]; then

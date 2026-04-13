@@ -105,14 +105,17 @@ COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHORT}"
 build_blocks() {
   local blocks="[]"
 
-  # 标题
-  if [[ -n "$CHANGED_FILES" ]]; then
-    blocks=$(echo "$blocks" | jq --arg t "📝  *${TITLE}*  文档更新" \
-      '. + [{"type":"header","text":{"type":"plain_text","text":"📝 '"$TITLE"' 文档更新","emoji":true}}]')
+  # 标题（根据变更类型组合）
+  local header_text
+  if [[ -n "$CHANGED_FILES" && -n "$META_DETAIL" ]]; then
+    header_text="📝 ${TITLE} 文档 & 任务信息更新"
+  elif [[ -n "$CHANGED_FILES" ]]; then
+    header_text="📝 ${TITLE} 文档更新"
   else
-    blocks=$(echo "$blocks" | jq --arg t "🔄  *${TITLE}*  任务信息更新" \
-      '. + [{"type":"header","text":{"type":"plain_text","text":"🔄 '"$TITLE"' 任务信息更新","emoji":true}}]')
+    header_text="🔄 ${TITLE} 任务信息更新"
   fi
+  blocks=$(echo "$blocks" | jq --arg h "$header_text" \
+    '. + [{"type":"header","text":{"type":"plain_text","text":$h,"emoji":true}}]')
 
   # 来源上下文
   blocks=$(echo "$blocks" | jq \
@@ -170,7 +173,13 @@ build_blocks() {
 # 纯文本 fallback（用于 Webhook 和 text 字段）
 build_fallback_text() {
   local text="${REPO} | ${BRANCH} | ${COMMIT_SHORT}"
-  if [[ -n "$CHANGED_FILES" ]]; then
+  if [[ -n "$CHANGED_FILES" && -n "$META_PLAIN" ]]; then
+    text="${text}
+📝 ${TITLE} 文档 & 任务信息更新
+变更文件：${CHANGED_FILES}"
+    [[ -n "$SUMMARY" ]] && text="${text}
+改动摘要：${SUMMARY}"
+  elif [[ -n "$CHANGED_FILES" ]]; then
     text="${text}
 📝 ${TITLE} 文档更新
 变更文件：${CHANGED_FILES}"
