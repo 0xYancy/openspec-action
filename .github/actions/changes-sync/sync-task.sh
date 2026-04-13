@@ -106,33 +106,55 @@ version=$(echo "$entry" | jq -r '.version')
 content=$(echo "$entry" | jq -r '.content // empty')
 repo_name=$(echo "$REPO" | cut -d'/' -f2)
 
-# 查找 Version ID（结合 repo 名称消歧义）
+# 查找 Version ID（始终结合 repo 关键字筛选，避免跨 repo 版本号重复）
 version_id=""
 if [[ -n "$version" ]]; then
+  repo_kw=$(echo "$repo_name" | sed 's/^bifrost-//' | tr '[:upper:]' '[:lower:]')
+
+  # jq 过滤器：扫描页面所有属性文本，匹配 repo 关键字
+  REPO_FILTER='
+    .results[] |
+    . as $page |
+    ([$page.properties | to_entries[] | .value |
+      if type == "object" then
+        (.title?         // [] | map(.plain_text? // "") | join("")),
+        (.rich_text?     // [] | map(.plain_text? // "") | join("")),
+        (.select?        | .name? // ""),
+        (.multi_select?  // [] | map(.name) | join(""))
+      else "" end
+    ] | join(" ") | ascii_downcase) |
+    if contains($kw) then $page.id else empty end
+  '
+
+  # 第一轮：精确匹配版本号 + repo 关键字
   version_results=$(curl -s -X POST "https://api.notion.com/v1/data_sources/$VERSION_DS_ID/query" \
     -H "Authorization: Bearer $NOTION_KEY" \
     -H "Notion-Version: $NOTION_VERSION" \
     -H "Content-Type: application/json" \
-    -d "$(jq -n --arg v "$version" '{"filter":{"property":"版本号","title":{"contains":$v}}}')")
-  ver_count=$(echo "$version_results" | jq '.results | length')
-  if [[ "$ver_count" -eq 1 ]]; then
-    version_id=$(echo "$version_results" | jq -r '.results[0].id')
-  elif [[ "$ver_count" -gt 1 ]]; then
-    repo_kw=$(echo "$repo_name" | sed 's/^bifrost-//' | tr '[:upper:]' '[:lower:]')
-    version_id=$(echo "$version_results" | jq -r --arg kw "$repo_kw" '
-      .results[] |
-      . as $page |
-      ([$page.properties | to_entries[] | .value |
-        if type == "object" then
-          (.title?         // [] | map(.plain_text? // "") | join("")),
-          (.rich_text?     // [] | map(.plain_text? // "") | join("")),
-          (.select?        | .name? // ""),
-          (.multi_select?  // [] | map(.name) | join(""))
-        else "" end
-      ] | join(" ") | ascii_downcase) |
-      if contains($kw) then $page.id else empty end
-    ' | head -1)
-    [[ -z "$version_id" ]] && version_id=$(echo "$version_results" | jq -r '.results[0].id')
+    -d "$(jq -n --arg v "$version" '{"filter":{"property":"版本号","title":{"equals":$v}}}')")
+  version_id=$(echo "$version_results" | jq -r --arg kw "$repo_kw" "$REPO_FILTER" | head -1)
+
+  # 第二轮：模糊匹配版本号 + repo 关键字
+  if [[ -z "$version_id" ]]; then
+    version_results=$(curl -s -X POST "https://api.notion.com/v1/data_sources/$VERSION_DS_ID/query" \
+      -H "Authorization: Bearer $NOTION_KEY" \
+      -H "Notion-Version: $NOTION_VERSION" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg v "$version" '{"filter":{"property":"版本号","title":{"contains":$v}}}')")
+    version_id=$(echo "$version_results" | jq -r --arg kw "$repo_kw" "$REPO_FILTER" | head -1)
+  fi
+
+  # 最终 fallback：精确匹配版本号但不限 repo（仅单条结果时）
+  if [[ -z "$version_id" ]]; then
+    version_results=$(curl -s -X POST "https://api.notion.com/v1/data_sources/$VERSION_DS_ID/query" \
+      -H "Authorization: Bearer $NOTION_KEY" \
+      -H "Notion-Version: $NOTION_VERSION" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg v "$version" '{"filter":{"property":"版本号","title":{"equals":$v}}}')")
+    ver_count=$(echo "$version_results" | jq '.results | length')
+    if [[ "$ver_count" -eq 1 ]]; then
+      version_id=$(echo "$version_results" | jq -r '.results[0].id')
+    fi
   fi
 fi
 
