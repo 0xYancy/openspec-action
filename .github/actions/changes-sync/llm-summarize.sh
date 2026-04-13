@@ -32,10 +32,32 @@ for base in \
   done
 done
 
-DIFF=$(git diff "$BEFORE_SHA" "$AFTER_SHA" -- "${PATHS[@]}" 2>&1 || true)
+# 判断 BEFORE_SHA 是否为有效 commit（新分支首次 push 时为 null SHA 0000...）
+IS_VALID_BEFORE=true
+if [[ "$BEFORE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+  IS_VALID_BEFORE=false
+fi
+
+DIFF=""
+if [[ "$IS_VALID_BEFORE" == "true" ]]; then
+  DIFF=$(git diff "$BEFORE_SHA" "$AFTER_SHA" -- "${PATHS[@]}" 2>&1 || true)
+fi
+
+# 如果 diff 为空（新分支或路径不匹配），直接读取当前文件内容作为"全新增"
+if [[ -z "$DIFF" ]]; then
+  for p in "${PATHS[@]}"; do
+    FILE_CONTENT=$(git show "$AFTER_SHA:$p" 2>/dev/null || true)
+    if [[ -n "$FILE_CONTENT" ]]; then
+      DIFF="${DIFF}
+--- /dev/null
++++ b/${p}
+$(echo "$FILE_CONTENT" | sed 's/^/+/')"
+    fi
+  done
+fi
 
 if [[ -z "$DIFF" ]]; then
-  echo "  ⚠ summarize: no diff between $BEFORE_SHA..$AFTER_SHA for $CHANGE_NAME (paths checked: ${#PATHS[@]} files)" >&2
+  echo "  ⚠ summarize: no content found for $CHANGE_NAME at $AFTER_SHA (paths checked: ${#PATHS[@]} files)" >&2
   exit 0
 fi
 
