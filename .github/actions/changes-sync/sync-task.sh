@@ -359,6 +359,16 @@ fi
 
 echo "  ✓ Created: $page_id"
 
+# 新建时也输出 META_DIFF（旧值为空），让 Slack 通知展示初始元数据
+[[ -n "$title" ]]    && echo "META_DIFF=title|空|${title}" >&2
+[[ -n "$status" ]]   && echo "META_DIFF=status|空|${status}" >&2
+[[ -n "$type" ]]     && echo "META_DIFF=type|空|${type}" >&2
+[[ -n "$priority" ]] && echo "META_DIFF=priority|空|${priority}" >&2
+[[ -n "$estimate" ]] && echo "META_DIFF=estimate|空|${estimate}" >&2
+[[ -n "$version" ]]  && echo "META_DIFF=version|空|${version}" >&2
+[[ -n "$assignee" ]] && echo "META_DIFF=assignee|空|${assignee}" >&2
+[[ -n "$BRANCH" ]]   && echo "META_DIFF=branch|空|${BRANCH}" >&2
+
 # 新建时追加文档内容
 if [[ -n "$content" ]]; then
   blocks=$(echo "$content" | python3 "$SCRIPT_DIR/md2blocks.py")
