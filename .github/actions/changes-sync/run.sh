@@ -28,6 +28,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 : "${COMMIT_SHA:?COMMIT_SHA is required}"
 : "${BEFORE_SHA:=}"
 
+# 确保 BEFORE_SHA 可访问（GitHub Actions 默认 shallow clone，需要按需 fetch）
+# 如果 fetch 失败，fallback 到 HEAD~1，避免 archive 移动检测失效
+if [[ -n "$BEFORE_SHA" ]] && ! [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+  if ! git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+    echo "→ BEFORE_SHA $BEFORE_SHA not in local repo, attempting fetch..."
+    if ! git fetch --depth=2 origin "$BEFORE_SHA" 2>/dev/null; then
+      echo "  ⚠ fetch failed, fallback to HEAD~1"
+      if git rev-parse HEAD~1 >/dev/null 2>&1; then
+        BEFORE_SHA=$(git rev-parse HEAD~1)
+        echo "  → using HEAD~1: $BEFORE_SHA"
+      else
+        # 尝试加深历史一层
+        git fetch --deepen=1 origin 2>/dev/null || true
+        if git rev-parse HEAD~1 >/dev/null 2>&1; then
+          BEFORE_SHA=$(git rev-parse HEAD~1)
+          echo "  → after deepen, using HEAD~1: $BEFORE_SHA"
+        else
+          echo "  ⚠ could not resolve any usable BEFORE_SHA, archive detection may be inaccurate"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # 公开 ID 默认值（与 sync-task.sh 保持一致）
 NOTION_VERSION="${NOTION_VERSION:-2025-09-03}"
 NOTION_TASK_DS_ID="${NOTION_TASK_DS_ID:-318bc3b8-8a84-802f-af8e-000b8589126c}"
