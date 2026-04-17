@@ -106,7 +106,7 @@ COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHORT}"
 build_blocks() {
   local blocks="[]"
 
-  # 标题（根据变更类型组合）
+  # 标题（根据变更类型组合，Slack header 限 150 字符）
   local header_text
   if [[ -n "$CHANGED_FILES" && -n "$META_DETAIL" ]]; then
     header_text="📝 ${TITLE} 文档 & 任务信息更新"
@@ -115,6 +115,7 @@ build_blocks() {
   else
     header_text="🔄 ${TITLE} 任务信息更新"
   fi
+  header_text="${header_text:0:150}"
   blocks=$(echo "$blocks" | jq --arg h "$header_text" \
     '. + [{"type":"header","text":{"type":"plain_text","text":$h,"emoji":true}}]')
 
@@ -140,9 +141,11 @@ build_blocks() {
     blocks=$(echo "$blocks" | jq --arg files "$file_tags" \
       '. + [{"type":"section","text":{"type":"mrkdwn","text":("*变更文件*\n" + $files)}}]')
 
-    # 改动摘要
+    # 改动摘要（Slack section text 限 3000 字符）
     if [[ -n "$SUMMARY" ]]; then
-      blocks=$(echo "$blocks" | jq --arg s "$SUMMARY" \
+      local summary_truncated="${SUMMARY:0:2900}"
+      [[ ${#SUMMARY} -gt 2900 ]] && summary_truncated="${summary_truncated}..."
+      blocks=$(echo "$blocks" | jq --arg s "$summary_truncated" \
         '. + [{"type":"section","text":{"type":"mrkdwn","text":("*改动摘要*\n" + $s)}}]')
     fi
   fi
