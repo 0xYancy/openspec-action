@@ -101,7 +101,7 @@ while (( round < max_rounds )); do
       '{
         model: $model,
         messages: [{role: "user", content: $content}],
-        max_tokens: 1024,
+        max_tokens: 256,
         temperature: 0.3
       }')
 
