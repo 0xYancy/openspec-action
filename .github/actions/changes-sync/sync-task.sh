@@ -57,6 +57,9 @@ normalize_status() {
     进行中|开发中|in-progress|In-Progress|in_progress|doing|Doing)
       echo "开发中"
       ;;
+    测试中|测试|testing|Testing|test|Test|in-test|In-Test|in_test|qa|QA)
+      echo "测试中"
+      ;;
     完成|已完成|done|Done|completed|Completed)
       echo "完成"
       ;;
@@ -213,7 +216,7 @@ if [[ -n "$existing" ]]; then
     changed_fields+=("title")
     echo "META_DIFF=title|${cur_title:-空}|${title}" >&2
   fi
-  if [[ "$cur_status" != "$status" && "$cur_status" != "完成" ]]; then
+  if [[ "$cur_status" != "$status" && ( "$cur_status" != "完成" || "$status" == "测试中" ) ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$status" \
       '. + {"Status": {"status": {"name": $v}}}')
     changed_fields+=("status")
