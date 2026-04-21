@@ -54,6 +54,11 @@ runs:
             exit 1
           fi
         done
+        # load-metadata.py 依赖 PyYAML；ubuntu-latest 通常自带，缺失时按需安装
+        if ! python3 -c "import yaml" >/dev/null 2>&1; then
+          echo "PyYAML not found, installing..."
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        fi
 
     - name: Run changes sync
       shell: bash

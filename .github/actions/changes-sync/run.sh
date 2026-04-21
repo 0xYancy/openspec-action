@@ -1,15 +1,18 @@
 #!/bin/bash
 # run.sh - composite action 主入口
-# 接收 openspec-f workflow 提取好的元数据 JSON 数组与 commit 信息，
+# 基于 CHANGED_FILES 自行识别本次涉及的 change 目录，并直接从每个目录的 .openspec.yaml
+# 加载元数据（PyYAML 解析 + python json.dumps 输出，规避所有特殊字符转义问题）。
 # 对每条 change 完成：元数据同步 → 文档按分类直接搬运（如有文档变更）→ Notion 正文写入 → Slack 通知 → 日志输出
 #
 # 必需环境变量（由 action.yml 透传）：
-#   METADATA           JSON 数组：[{change, title, assignee, status, priority, version, deadline, estimate, ID, type, progress}, ...]
 #   CHANGED_FILES      空格分隔的本次 push 涉及的文件列表（来自 git diff）
 #   REPO               owner/name
 #   BRANCH             分支名
 #   COMMIT_SHA         本次 commit SHA
 #   BEFORE_SHA         上一个 commit SHA（用于 diff）
+#
+# 可选环境变量：
+#   METADATA           旧版上游 workflow 传入的 JSON 数组；保留兼容但不再作为信源使用
 #
 # Secrets（必需）：
 #   NOTION_API_KEY、OPENROUTER_API_KEY、SLACK_WEBHOOK_URL
@@ -21,7 +24,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-: "${METADATA:?METADATA is required}"
+: "${METADATA:=}"
 : "${CHANGED_FILES:=}"
 : "${REPO:?REPO is required}"
 : "${BRANCH:?BRANCH is required}"
@@ -70,23 +73,31 @@ SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/step-summary.md}"
   echo "|--------|------|------|---------|--------|"
 } >> "$SUMMARY_FILE"
 
-# 解析 metadata 数组并逐条处理
-COUNT=$(echo "$METADATA" | jq 'length')
+# 从 CHANGED_FILES 抽取本次涉及的 change 名字（按出现顺序去重）
+# 这种方式纯字符串操作，免疫上游 JSON 组装时的特殊字符转义问题
+CHANGE_NAMES=()
+declare -A SEEN_CHANGE
+for f in $CHANGED_FILES; do
+  if [[ "$f" =~ ^(openspec/)?changes/(archive/)?([^/]+)/ ]]; then
+    name="${BASH_REMATCH[3]}"
+    if [[ -z "${SEEN_CHANGE[$name]:-}" ]]; then
+      CHANGE_NAMES+=("$name")
+      SEEN_CHANGE[$name]=1
+    fi
+  fi
+done
+
+COUNT=${#CHANGE_NAMES[@]}
 if [[ "$COUNT" == "0" ]]; then
   echo "No changes to sync"
   echo "" >> "$SUMMARY_FILE"
-  echo "_(本次 push 未涉及任何 change 元数据)_" >> "$SUMMARY_FILE"
+  echo "_(本次 push 未涉及任何 change 目录)_" >> "$SUMMARY_FILE"
   exit 0
 fi
 
 OVERALL_STATUS=0
 
-for ((i=0; i<COUNT; i++)); do
-  ENTRY=$(echo "$METADATA" | jq ".[$i]")
-  CHANGE_NAME=$(echo "$ENTRY" | jq -r '.change')
-  TITLE=$(echo "$ENTRY" | jq -r '.title // .change')
-  ASSIGNEE=$(echo "$ENTRY" | jq -r '.assignee // empty')
-
+for CHANGE_NAME in "${CHANGE_NAMES[@]}"; do
   echo ""
   echo "──────────── $CHANGE_NAME ────────────"
 
@@ -102,10 +113,21 @@ for ((i=0; i<COUNT; i++)); do
     CHANGE_DIR="changes/archive/$CHANGE_NAME"
   else
     echo "  ✗ Change directory not found"
-    echo "| $CHANGE_NAME | $TITLE | ✗ dir not found | — | — |" >> "$SUMMARY_FILE"
+    echo "| $CHANGE_NAME | — | ✗ dir not found | — | — |" >> "$SUMMARY_FILE"
     OVERALL_STATUS=1
     continue
   fi
+
+  # 从 .openspec.yaml 加载元数据（PyYAML 解析 + json.dumps 自动转义所有特殊字符）
+  if ! ENTRY=$(python3 "$SCRIPT_DIR/load-metadata.py" "$CHANGE_DIR" 2>&1); then
+    echo "  ✗ Failed to load metadata: $ENTRY"
+    echo "| $CHANGE_NAME | — | ✗ metadata failed | — | — |" >> "$SUMMARY_FILE"
+    OVERALL_STATUS=1
+    continue
+  fi
+
+  TITLE=$(echo "$ENTRY" | jq -r '.title // .change')
+  ASSIGNEE=$(echo "$ENTRY" | jq -r '.assignee // empty')
 
   # 判断本次 push 是否涉及该 change 目录下任意 .md 文件（排除纯目录移动）
   # archive 操作只是把目录从 changes/xxx 移到 changes/archive/xxx，文件内容不变，
