@@ -67,16 +67,6 @@ resolve_slack_id() {
   done
 }
 
-MENTION=""
-if [[ -n "$ASSIGNEE" ]]; then
-  MATCHED_ID=$(resolve_slack_id "$ASSIGNEE")
-  if [[ -n "$MATCHED_ID" ]]; then
-    MENTION="<@${MATCHED_ID}> <@U0A5JSTVDNF>"
-  else
-    MENTION="<@U0A5JSTVDNF> (assignee: $ASSIGNEE)"
-  fi
-fi
-
 # 元数据变更解析（格式: field|旧值|新值，多条换行分隔）
 declare -A FIELD_LABELS=(
   [title]="标题" [status]="状态" [type]="类型" [priority]="优先级"
@@ -84,18 +74,46 @@ declare -A FIELD_LABELS=(
 )
 META_DETAIL=""   # Block Kit mrkdwn 格式: "• 状态: 待开发 → 开发中"
 META_PLAIN=""    # 纯文本 fallback
+STATUS_NEW=""    # 仅记录 status 字段新值，用于决定是否 @ 测试 Kai
 if [[ -n "$META_FIELDS" ]]; then
   while IFS= read -r diff_line; do
     [[ -z "$diff_line" ]] && continue
     field=$(echo "$diff_line" | cut -d'|' -f1)
     old_val=$(echo "$diff_line" | cut -d'|' -f2)
     new_val=$(echo "$diff_line" | cut -d'|' -f3)
+    [[ "$field" == "status" ]] && STATUS_NEW="$new_val"
     label="${FIELD_LABELS[$field]:-$field}"
     META_DETAIL="${META_DETAIL}• *${label}*:  ${old_val}  →  ${new_val}
 "
     META_PLAIN="${META_PLAIN}• ${label}: ${old_val} → ${new_val}
 "
   done <<< "$META_FIELDS"
+fi
+
+# Mention 规则：
+#   · 有 assignee 且映射命中 → @ assignee
+#   · 新状态进入「需求探索中」或「测试中」 → 额外 @ 测试 Kai（引导测试介入）
+#   · 未映射到 assignee 时，保留 "(assignee: xxx)" 纯文本提示
+KAI_ID="${SLACK_IDS[Kai]}"
+NOTIFY_KAI=false
+if [[ "$STATUS_NEW" == "需求探索中" || "$STATUS_NEW" == "测试中" ]]; then
+  NOTIFY_KAI=true
+fi
+MENTION=""
+if [[ -n "$ASSIGNEE" ]]; then
+  MATCHED_ID=$(resolve_slack_id "$ASSIGNEE")
+  if [[ -n "$MATCHED_ID" ]]; then
+    MENTION="<@${MATCHED_ID}>"
+    [[ "$NOTIFY_KAI" == "true" ]] && MENTION="${MENTION} <@${KAI_ID}>"
+  else
+    if [[ "$NOTIFY_KAI" == "true" ]]; then
+      MENTION="<@${KAI_ID}> (assignee: $ASSIGNEE)"
+    else
+      MENTION="(assignee: $ASSIGNEE)"
+    fi
+  fi
+elif [[ "$NOTIFY_KAI" == "true" ]]; then
+  MENTION="<@${KAI_ID}>"
 fi
 
 # GitHub commit URL
