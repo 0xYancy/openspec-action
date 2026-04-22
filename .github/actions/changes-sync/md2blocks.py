@@ -298,8 +298,19 @@ def parse_lines(content):
     return parsed
 
 
-def build_tree(parsed):
-    """第二阶段：基于缩进把 list item 嵌套为 Notion children 树."""
+def build_tree(parsed, max_nest_depth=2):
+    """第二阶段：基于缩进把 list item 嵌套为 Notion children 树。
+
+    Notion append_block_children 最多允许 2 层 children 嵌套（从请求 body.children
+    数起），更深会被 400 拒。build_tree 的产物被挂到不同层级时允许的嵌套深度不同：
+      - 放到 body.children 直接层（非 toggle 场景）：max_nest_depth=2
+      - 放到 toggle.children（toggle 已占掉一层）：max_nest_depth=1
+
+    max_nest_depth:
+      - 0：所有 list item 不嵌套，一律平铺
+      - N：允许 N 层嵌套；超过深度的 item 降级挂到第 N 层作为 sibling，
+        保留内容但缩短视觉层级
+    """
     blocks = []
     stack = []  # list of (indent, block_ref)
 
@@ -314,13 +325,17 @@ def build_tree(parsed):
         while stack and stack[-1][0] >= indent:
             stack.pop()
 
-        if stack:
-            # 当前 item 是栈顶 item 的子节点
-            _, parent = stack[-1]
-            parent_body = parent[parent['type']]
-            parent_body.setdefault('children', []).append(block)
-        else:
+        if not stack:
             blocks.append(block)
+        else:
+            # 目标嵌套深度不得超过 max_nest_depth；超过时取 stack[max-1] 作为 parent
+            target_depth = min(len(stack), max_nest_depth)
+            if target_depth == 0:
+                blocks.append(block)
+            else:
+                _, parent = stack[target_depth - 1]
+                parent_body = parent[parent['type']]
+                parent_body.setdefault('children', []).append(block)
 
         stack.append((indent, block))
 
@@ -356,12 +371,13 @@ def main():
     all_blocks = []
     for title, body in sections:
         parsed = parse_lines(body)
-        children = build_tree(parsed)
         if title is None:
-            # toggle 标记之前的普通内容
+            # 放到 body.children 直接层，允许两层嵌套
+            children = build_tree(parsed, max_nest_depth=2)
             all_blocks.extend(children)
         else:
-            # toggle block，文档内容作为 children
+            # toggle 已占掉一层嵌套配额，内部只允许一层
+            children = build_tree(parsed, max_nest_depth=1)
             toggle_block = {
                 'object': 'block',
                 'type': 'toggle',
