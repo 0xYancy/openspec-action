@@ -93,6 +93,35 @@ normalize_priority() {
   esac
 }
 
+# 按 100 条一批向 /blocks/{id}/children 追加 blocks
+# 通过 stdin 传 payload 以规避 ARG_MAX（大文档拼出的 JSON 常超过 2MB）
+# 同时应对 Notion API 单次请求最多 100 blocks 的硬上限
+# 用法: append_blocks_batched <parent_block_id> <blocks_json_array>
+# 输出: 最后一次 API 响应 body；失败时 return 1 并输出错误响应
+append_blocks_batched() {
+  local parent_id="$1"
+  local all_blocks="$2"
+  local total offset batch result
+  total=$(echo "$all_blocks" | jq 'length')
+  offset=0
+  result=""
+  while (( offset < total )); do
+    batch=$(echo "$all_blocks" | jq --argjson o "$offset" '.[$o:$o+100]')
+    result=$(printf '{"children": %s}' "$batch" \
+      | curl -s -X PATCH "https://api.notion.com/v1/blocks/$parent_id/children" \
+        -H "Authorization: Bearer $NOTION_KEY" \
+        -H "Notion-Version: $NOTION_VERSION" \
+        -H "Content-Type: application/json" \
+        --data-binary @-)
+    if ! echo "$result" | jq -e '.object == "list"' > /dev/null 2>&1; then
+      echo "$result"
+      return 1
+    fi
+    offset=$((offset + 100))
+  done
+  echo "$result"
+}
+
 # 读取字段
 change=$(echo "$entry" | jq -r '.change')
 id=$(echo "$entry" | jq -r '.ID')
@@ -303,12 +332,7 @@ if [[ -n "$existing" ]]; then
     done
 
     blocks=$(echo "$content" | python3 "$SCRIPT_DIR/md2blocks.py")
-    content_result=$(curl -s -X PATCH "https://api.notion.com/v1/blocks/$existing/children" \
-      -H "Authorization: Bearer $NOTION_KEY" \
-      -H "Notion-Version: $NOTION_VERSION" \
-      -H "Content-Type: application/json" \
-      -d "{\"children\": $blocks}")
-    if echo "$content_result" | jq -e '.object == "list"' > /dev/null 2>&1; then
+    if content_result=$(append_blocks_batched "$existing" "$blocks"); then
       echo "  ✓ Updated content"
     else
       echo "  ✗ Failed to update content: $(echo "$content_result" | jq -r '.message // "unknown error"')"
@@ -375,12 +399,7 @@ echo "  ✓ Created: $page_id"
 # 新建时追加文档内容
 if [[ -n "$content" ]]; then
   blocks=$(echo "$content" | python3 "$SCRIPT_DIR/md2blocks.py")
-  patch_result=$(curl -s -X PATCH "https://api.notion.com/v1/blocks/$page_id/children" \
-    -H "Authorization: Bearer $NOTION_KEY" \
-    -H "Notion-Version: $NOTION_VERSION" \
-    -H "Content-Type: application/json" \
-    -d "{\"children\": $blocks}")
-  if echo "$patch_result" | jq -e '.object == "list"' > /dev/null 2>&1; then
+  if patch_result=$(append_blocks_batched "$page_id" "$blocks"); then
     echo "  ✓ Added content"
   else
     echo "  ✗ Failed to add content: $(echo "$patch_result" | jq -r '.message // "unknown error"')"
