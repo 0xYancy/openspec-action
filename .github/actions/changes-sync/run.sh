@@ -75,14 +75,19 @@ SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/step-summary.md}"
 
 # 从 CHANGED_FILES 抽取本次涉及的 change 名字（按出现顺序去重）
 # 这种方式纯字符串操作，免疫上游 JSON 组装时的特殊字符转义问题
+# 归档操作会让 CHANGED_FILES 同时含「旧名路径」与「新名路径」（OpenSpec 归档时
+# 会给目录加 YYYY-MM-DD- 前缀），旧名目录在 work tree 里已不存在，跳过避免噪音
 CHANGE_NAMES=()
 declare -A SEEN_CHANGE
 for f in $CHANGED_FILES; do
   if [[ "$f" =~ ^(openspec/)?changes/(archive/)?([^/]+)/ ]]; then
     name="${BASH_REMATCH[3]}"
     if [[ -z "${SEEN_CHANGE[$name]:-}" ]]; then
-      CHANGE_NAMES+=("$name")
       SEEN_CHANGE[$name]=1
+      if [[ -d "openspec/changes/$name" || -d "changes/$name" \
+         || -d "openspec/changes/archive/$name" || -d "changes/archive/$name" ]]; then
+        CHANGE_NAMES+=("$name")
+      fi
     fi
   fi
 done
@@ -137,9 +142,17 @@ for CHANGE_NAME in "${CHANGE_NAMES[@]}"; do
   CHANGED_DOCS=""
 
   # 构建 BEFORE_SHA 中该 change 可能存在的所有旧路径
+  # 同时尝试「带日期前缀」与「去前缀」两种命名，因为 OpenSpec 归档时会把
+  # changes/foo 重命名为 changes/archive/YYYY-MM-DD-foo，归档前后名字不同
+  CANDIDATE_NAMES=("$CHANGE_NAME")
+  if [[ "$CHANGE_NAME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-(.+)$ ]]; then
+    CANDIDATE_NAMES+=("${BASH_REMATCH[1]}")
+  fi
   OLD_PATHS=()
   for prefix in "openspec/changes" "changes" "openspec/changes/archive" "changes/archive"; do
-    OLD_PATHS+=("${prefix}/${CHANGE_NAME}")
+    for n in "${CANDIDATE_NAMES[@]}"; do
+      OLD_PATHS+=("${prefix}/${n}")
+    done
   done
 
   for f in proposal.md design.md tasks.md tests.md; do
