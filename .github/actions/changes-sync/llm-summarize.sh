@@ -10,9 +10,16 @@ CHANGE_NAME=$1
 BEFORE_SHA=$2
 AFTER_SHA=$3
 
-: "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}"
+# DeepSeek 优先，OpenRouter 作为 fallback；至少需要其中一个
+if [[ -z "${DEEPSEEK_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "ERROR: either DEEPSEEK_API_KEY or OPENROUTER_API_KEY is required" >&2
+  exit 1
+fi
 
-# OPENROUTER_MODEL 支持逗号分隔的多个模型，按顺序作为 fallback
+# DeepSeek 模型配置
+DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+
+# OPENROUTER fallback 配置：支持逗号分隔的多个模型，按顺序 fallback
 # 默认列表覆盖几个常见的 free 模型，单个被限流时自动切换下一个
 DEFAULT_MODELS="nvidia/nemotron-3-super-120b-a12b:free,minimax/minimax-m2.5:free,z-ai/glm-4.5-air:free,google/gemma-4-31b-it:free"
 MODELS_RAW="${OPENROUTER_MODEL:-$DEFAULT_MODELS}"
@@ -86,7 +93,37 @@ PROMPT_EOF
 FULL_INPUT="${PROMPT}
 ${DIFF_TRUNCATED}"
 
-# 调用 OpenRouter：按模型列表顺序 fallback，多轮重试
+# ── DeepSeek 优先调用 ──
+if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+  PAYLOAD=$(jq -n \
+    --arg model "$DEEPSEEK_MODEL" \
+    --arg content "$FULL_INPUT" \
+    '{
+      model: $model,
+      messages: [{role: "user", content: $content}],
+      max_tokens: 1024,
+      temperature: 0.3
+    }')
+
+  RESP=$(curl -sS -X POST "https://api.deepseek.com/chat/completions" \
+    -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" || echo '{}')
+
+  CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+  if [[ -n "$CONTENT" ]]; then
+    echo "  ✓ DeepSeek summarize succeeded with $DEEPSEEK_MODEL" >&2
+    echo "$CONTENT"
+    exit 0
+  fi
+
+  ERR=$(echo "$RESP" | jq -r '.error.message // .error // "no content returned"')
+  echo "  ⚠ DeepSeek summarize failed ($DEEPSEEK_MODEL): $ERR, falling back to OpenRouter..." >&2
+else
+  echo "  → DEEPSEEK_API_KEY not set, using OpenRouter directly" >&2
+fi
+
+# ── OpenRouter fallback（多模型轮询 + 多轮重试）──
 max_rounds=2
 round=0
 while (( round < max_rounds )); do

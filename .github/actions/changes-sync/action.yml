@@ -29,7 +29,15 @@ inputs:
     description: 'OpenRouter API key（LLM 整理/摘要文档）'
     required: true
   openrouter-model:
-    description: 'OpenRouter 模型名（可选，默认 minimax/minimax-m2.5:free）'
+    description: 'OpenRouter 模型名（可选，默认 nvidia/nemotron-3-super-120b-a12b:free,...）'
+    required: false
+    default: ''
+  deepseek-api-key:
+    description: 'DeepSeek API key（优先使用，失败时 fallback 到 OpenRouter）'
+    required: false
+    default: ''
+  deepseek-model:
+    description: 'DeepSeek 模型名（可选，默认 deepseek-v4-flash）'
     required: false
     default: ''
   slack-webhook-url:
@@ -72,6 +80,8 @@ runs:
         NOTION_API_KEY: ${{ inputs.notion-api-key }}
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
         OPENROUTER_MODEL: ${{ inputs.openrouter-model }}
+        DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
+        DEEPSEEK_MODEL: ${{ inputs.deepseek-model }}
         SLACK_WEBHOOK_URL: ${{ inputs.slack-webhook-url }}
         SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
       run: |
