@@ -64,6 +64,12 @@ export NOTION_VERSION NOTION_TASK_DS_ID
 
 COMMIT_SHORT=$(echo "$COMMIT_SHA" | cut -c1-7)
 
+# Slack 只响应目标分支第一父链上的直接文档提交；纯 merge 仍执行完整 Notion 同步。
+SHOULD_NOTIFY_SLACK=false
+if bash "$SCRIPT_DIR/should-notify.sh" "$BEFORE_SHA" "$COMMIT_SHA"; then
+  SHOULD_NOTIFY_SLACK=true
+fi
+
 # 初始化 step summary
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/step-summary.md}"
 {
@@ -282,7 +288,8 @@ ${doc_body}
   META_DIFFS=$(echo "$SYNC_LOG" | grep '^META_DIFF=' | sed 's/^META_DIFF=//' || true)
 
   # Slack 通知：文档变更 或 元数据变更 都发
-  if [[ "$HAS_DOC_CHANGES" == "true" || -n "$META_DIFFS" ]]; then
+  if [[ "$SHOULD_NOTIFY_SLACK" == "true" ]] && \
+     [[ "$HAS_DOC_CHANGES" == "true" || -n "$META_DIFFS" ]]; then
     SUMMARY_TEXT=""
     if [[ "$HAS_DOC_CHANGES" == "true" ]]; then
       if [[ -n "$BEFORE_SHA" ]]; then
