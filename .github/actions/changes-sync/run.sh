@@ -66,7 +66,7 @@ COMMIT_SHORT=$(echo "$COMMIT_SHA" | cut -c1-7)
 
 # Slack 只响应目标分支第一父链上的直接文档提交；纯 merge 仍执行完整 Notion 同步。
 SHOULD_NOTIFY_SLACK=false
-if bash "$SCRIPT_DIR/should-notify.sh" "$BEFORE_SHA" "$COMMIT_SHA"; then
+if bash "$SCRIPT_DIR/should-notify.sh" "$BEFORE_SHA" "$COMMIT_SHA" "$BRANCH"; then
   SHOULD_NOTIFY_SLACK=true
 fi
 
