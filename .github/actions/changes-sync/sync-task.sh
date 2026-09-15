@@ -132,7 +132,6 @@ raw_status=$(echo "$entry" | jq -r '.status')
 raw_priority=$(echo "$entry" | jq -r '.priority')
 status=$(normalize_status "$raw_status" "$change")
 priority=$(normalize_priority "$raw_priority")
-estimate=$(echo "$entry" | jq -r '.estimate // empty')
 assignee=$(echo "$entry" | jq -r '.assignee')
 version=$(echo "$entry" | jq -r '.version')
 content=$(echo "$entry" | jq -r '.content // empty')
@@ -222,7 +221,6 @@ if [[ -n "$existing" ]]; then
   cur_status=$(echo "$current"   | jq -r '.properties.Status.status.name // empty')
   cur_type=$(echo "$current"     | jq -r '.properties.Type.select.name // empty')
   cur_priority=$(echo "$current" | jq -r '.properties.Priority.select.name // empty')
-  cur_estimate=$(echo "$current" | jq -r '.properties.Estimate.number // empty')
   cur_version=$(echo "$current"  | jq -r '.properties.Version.relation[0].id // empty')
   cur_assignee=$(echo "$current" | jq -r '.properties.Assignee.people[0].id // empty')
   cur_branch=$(echo "$current"   | jq -r '.properties.Branch.rich_text[0].plain_text // empty')
@@ -262,12 +260,6 @@ if [[ -n "$existing" ]]; then
       '. + {"Priority": {"select": {"name": $v}}}')
     changed_fields+=("priority")
     echo "META_DIFF=priority|${cur_priority:-空}|${priority}" >&2
-  fi
-  if [[ "$cur_estimate" != "$estimate" && -z "$cur_estimate" && -n "$estimate" ]]; then
-    update_props=$(echo "$update_props" | jq --argjson v "$estimate" \
-      '. + {"Estimate": {"number": $v}}')
-    changed_fields+=("estimate")
-    echo "META_DIFF=estimate|${cur_estimate:-空}|${estimate}" >&2
   fi
   if [[ "$cur_version" != "$version_id" && -n "$version_id" ]]; then
     update_props=$(echo "$update_props" | jq --arg v "$version_id" \
@@ -363,8 +355,6 @@ props=$(jq -n \
     "Branch":   {"rich_text": [{"text": {"content": $branch}}]}
   }')
 
-[[ -n "$estimate" ]] && \
-  props=$(echo "$props" | jq --argjson e "$estimate" '. + {"Estimate": {"number": $e}}')
 [[ -n "$version_id" ]] && \
   props=$(echo "$props" | jq --arg v "$version_id" '. + {"Version": {"relation": [{"id": $v}]}}')
 [[ -n "$assignee_id" ]] && \
@@ -391,7 +381,6 @@ echo "  ✓ Created: $page_id"
 [[ -n "$status" ]]   && echo "META_DIFF=status|空|${status}" >&2
 [[ -n "$type" ]]     && echo "META_DIFF=type|空|${type}" >&2
 [[ -n "$priority" ]] && echo "META_DIFF=priority|空|${priority}" >&2
-[[ -n "$estimate" ]] && echo "META_DIFF=estimate|空|${estimate}" >&2
 [[ -n "$version" ]]  && echo "META_DIFF=version|空|${version}" >&2
 [[ -n "$assignee" ]] && echo "META_DIFF=assignee|空|${assignee}" >&2
 [[ -n "$BRANCH" ]]   && echo "META_DIFF=branch|空|${BRANCH}" >&2

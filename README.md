@@ -4,7 +4,7 @@
 
 承载逻辑（原本在本地 OpenClaw + Cloudflare Tunnel 链路上跑）：
 
-- 元数据字段同步（创建 / 增量更新，包含 status / priority normalize、Estimate 保护、已完成不回退）
+- 元数据字段同步（创建 / 增量更新，包含 status / priority normalize、已完成不回退）
 - 文档整合（proposal / design / tasks / tests → 精简正文，调用 OpenRouter 免费模型）
 - Notion 正文写入（Markdown → Notion blocks）
 - Slack 通知（commit diff 摘要 + assignee @mention）
@@ -88,7 +88,6 @@ jobs:
 - **元数据更新**：找到对应记录 → 逐字段比对，仅写差异
 - **文档更新**：本次 push 修改了 change 目录下任一 `.md` 文件 → 重新整合并覆写正文 + 发 Slack 通知
 - **纯元数据 push**：不调 LLM、不发 Slack
-- **Estimate 保护**：Notion 中已有非空 Estimate 不会被覆盖
 - **状态保护**：Notion 中已为「完成」的 task 不会被回退到旧状态
 - **失败隔离**：单条 change 同步失败不阻断其他 change；Slack 通知失败仅 warning 不阻断 workflow
 

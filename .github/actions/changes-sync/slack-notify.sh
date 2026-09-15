@@ -70,7 +70,7 @@ resolve_slack_id() {
 # 元数据变更解析（格式: field|旧值|新值，多条换行分隔）
 declare -A FIELD_LABELS=(
   [title]="标题" [status]="状态" [type]="类型" [priority]="优先级"
-  [estimate]="工时" [version]="版本" [assignee]="负责人" [branch]="分支"
+  [version]="版本" [assignee]="负责人" [branch]="分支"
 )
 META_DETAIL=""   # Block Kit mrkdwn 格式: "• 状态: 待开发 → 开发中"
 META_PLAIN=""    # 纯文本 fallback
