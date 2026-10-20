@@ -249,7 +249,7 @@ def main() -> int:
     }
     (out / "input.json").write_text(json.dumps(input_data, ensure_ascii=False, indent=2))
     (out / "signals.json").write_text(
-        json.dumps({"store": args.store_repo, "observed_at": iso(now), "open": signals, "repos": repo_results, "skipped_orgs": skipped_orgs}, ensure_ascii=False, indent=2)
+        json.dumps({"store": args.store_repo, "observed_at": iso(now), "open": signals, "drafts": {k: {"number": v["number"], "url": v["url"]} for k, v in open_drafts.items()}, "repos": repo_results, "skipped_orgs": skipped_orgs}, ensure_ascii=False, indent=2)
     )
     (out / "summary.json").write_text(
         json.dumps({"repos": repo_results, "skipped_orgs": skipped_orgs, "to_match": len(merged_items), "signals": len(signals)}, ensure_ascii=False, indent=2)

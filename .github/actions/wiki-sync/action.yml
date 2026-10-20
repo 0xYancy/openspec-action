@@ -1,0 +1,256 @@
+name: 'OpenSpec Store Wiki Sync'
+description: '非交互整理 Store 的产品 wiki：只索引本 Store → Agent 撰写待更新页面 → 结构与出处门槛 → 发布文件写入 Store 草稿 PR（已有则更新）→ Vercel 预览'
+author: '0xYancy'
+
+inputs:
+  store-token:
+    description: 'Store 仓库的 GITHUB_TOKEN（contents 与 pull-requests 写权限）'
+    required: false
+    default: ${{ github.token }}
+  app-id:
+    description: '只读 GitHub App 的 App ID'
+    required: false
+    default: ''
+  app-private-key:
+    description: '只读 GitHub App 的私钥'
+    required: false
+    default: ''
+  read-tokens:
+    description: '过渡期凭据：JSON {"<org>": "<只读细粒度 PAT>"}'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Agent 使用的 Anthropic API key'
+    required: true
+  hub-repo:
+    description: '知识中心所在仓库'
+    required: false
+    default: 'bifrost-io/openspec-f'
+  hub-ref:
+    description: '知识中心工具的版本（分支或提交）'
+    required: false
+    default: 'main'
+  rebuild:
+    description: '空格分隔的页面 id：基于全部来源重写这些页面'
+    required: false
+    default: ''
+  vercel-token:
+    description: 'Vercel token（预览部署；为空时跳过预览）'
+    required: false
+    default: ''
+  vercel-org-id:
+    required: false
+    default: ''
+  vercel-project-id:
+    required: false
+    default: ''
+
+outputs:
+  pr-url:
+    description: 'wiki 草稿 PR 地址（无待更新页面时为空）'
+    value: ${{ steps.pr.outputs.url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Prepare store facts
+      id: facts
+      shell: bash
+      run: |
+        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        STORE_ID=$(python3 -c "import yaml; print(yaml.safe_load(open('.openspec-store/store.yaml'))['id'])")
+        ORGS=$(python3 -c "
+        import sys; sys.path.insert(0, '${{ github.action_path }}/../shared')
+        from store_lib import load_repos
+        from pathlib import Path
+        orgs = {r['slug'].split('/')[0] for r in load_repos(Path('.'))} | {'${{ github.repository }}'.split('/')[0], '${{ inputs.hub-repo }}'.split('/')[0]}
+        print(' '.join(sorted(orgs)))
+        ")
+        W="$RUNNER_TEMP/openspec-wiki"
+        mkdir -p "$W"
+        printf 'stores:\n  - id: %s\n    product: %s\n    repo: %s\n    branch: %s\n' "$STORE_ID" "$STORE_ID" "${{ github.repository }}" "${{ github.event.repository.default_branch }}" > "$W/stores.yaml"
+        : > "$W/empty.conf"
+        echo "store-id=$STORE_ID" >> "$GITHUB_OUTPUT"
+        echo "orgs=$ORGS" >> "$GITHUB_OUTPUT"
+        echo "dir=$W" >> "$GITHUB_OUTPUT"
+
+    - name: Exchange read-only tokens
+      id: tokens
+      uses: 0xYancy/openspec-action/.github/actions/org-tokens@main
+      with:
+        orgs: ${{ steps.facts.outputs.orgs }}
+        app-id: ${{ inputs.app-id }}
+        app-private-key: ${{ inputs.app-private-key }}
+        read-tokens: ${{ inputs.read-tokens }}
+
+    - name: Checkout knowledge hub tools
+      shell: bash
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        HUB_ORG=$(echo "${{ inputs.hub-repo }}" | cut -d/ -f1)
+        TOKEN=$(jq -r --arg o "$HUB_ORG" '.tokens[$o] // empty' "${{ steps.tokens.outputs.file }}")
+        [ -z "$TOKEN" ] && { echo "缺少 $HUB_ORG 的只读凭据，无法读取知识中心工具"; exit 1; }
+        git clone --quiet --depth 1 --branch "${{ inputs.hub-ref }}" "https://x-access-token:$TOKEN@github.com/${{ inputs.hub-repo }}.git" "$W/hub"
+        cd "$W/hub/knowledge-hub" && npm ci --silent
+
+    - name: Index this store
+      shell: bash
+      env:
+        KNOWLEDGE_SNAPSHOT_DIR: ${{ steps.facts.outputs.dir }}/snapshot
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        cd "$W/hub/knowledge-hub"
+        python3 scripts/fetch-sources.py fetch --stores "$W/stores.yaml" --only-store "${{ steps.facts.outputs.store-id }}" \
+          --tokens "${{ steps.tokens.outputs.file }}" --out "$W/fetch"
+        # Store 自身以工作区检出为准（主分支最新内容），不用下载的副本。
+        python3 - "$W/fetch/sources.json" "${{ github.repository }} ${{ github.event.repository.default_branch }}" "$GITHUB_WORKSPACE" <<'EOF'
+        import json, sys
+        path, key, workspace = sys.argv[1:]
+        data = json.load(open(path)); data[key] = workspace; json.dump(data, open(path, "w"))
+        EOF
+        npx tsx scripts/index.ts --conf "$W/empty.conf" --stores "$W/stores.yaml" --sources-file "$W/fetch/sources.json" --trigger manual
+
+    - name: Find pages to update
+      id: status
+      shell: bash
+      env:
+        KNOWLEDGE_SNAPSHOT_DIR: ${{ steps.facts.outputs.dir }}/snapshot
+      run: |
+        cd "${{ steps.facts.outputs.dir }}/hub/knowledge-hub"
+        npm run -s wiki -- status --wiki "$GITHUB_WORKSPACE/wiki" | tee "${{ steps.facts.outputs.dir }}/status.txt"
+        REBUILD=""
+        [ -n "${{ inputs.rebuild }}" ] && REBUILD="--rebuild ${{ inputs.rebuild }}"
+        if OUT=$(npm run -s wiki -- init --wiki "$GITHUB_WORKSPACE/wiki" $REBUILD 2>&1); then
+          echo "$OUT"
+          RUN=$(echo "$OUT" | sed -n 's/^已创建草稿 //p' | head -1)
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+        elif echo "$OUT" | grep -q "没有待更新的页面"; then
+          echo "没有待更新的页面。" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "run=" >> "$GITHUB_OUTPUT"
+        else
+          # 结构配置错误等问题必须让运行失败，不能当作“没有待更新页面”。
+          echo "$OUT"
+          exit 1
+        fi
+
+    - name: Agent writes draft pages
+      if: steps.status.outputs.run != ''
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic-api-key }}
+        prompt: |
+          你在为产品 wiki 撰写草稿页面。草稿目录：${{ github.workspace }}/wiki/drafts/${{ steps.status.outputs.run }}。
+          先完整阅读 ${{ steps.facts.outputs.dir }}/hub/knowledge-hub/wiki/README.md，
+          再按 ${{ steps.facts.outputs.dir }}/hub/.claude/skills/opsx-manage-wiki-sync/SKILL.md 的第 3 步（概览页）与第 4 步（迭代记录页）撰写：
+          逐个读取草稿目录下 context/<页面 id>.json，改写 pages/<页面 id>.md。
+          只允许修改该草稿目录下 pages/ 中的文件，不得修改其他任何文件，不得运行命令。
+          不得写出处原文中没有的规则、数字或条件。
+        claude_args: |
+          --allowedTools Read,Edit,Write
+          --max-turns 80
+
+    - name: Check gates and publish to branch
+      id: publish
+      if: steps.status.outputs.run != ''
+      shell: bash
+      env:
+        KNOWLEDGE_SNAPSHOT_DIR: ${{ steps.facts.outputs.dir }}/snapshot
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        RUN="${{ steps.status.outputs.run }}"
+        cd "$W/hub/knowledge-hub"
+        npm run -s wiki -- check "$RUN" --wiki "$GITHUB_WORKSPACE/wiki" | tee "$W/check.txt"
+        npm run -s wiki -- publish "$RUN" --wiki "$GITHUB_WORKSPACE/wiki" | tee "$W/publish.txt"
+        cp "$GITHUB_WORKSPACE/wiki/drafts/$RUN/manifest.json" "$W/manifest.json" 2>/dev/null || true
+        rm -rf "$GITHUB_WORKSPACE/wiki/drafts"
+
+    - name: Open or update draft PR
+      id: pr
+      if: steps.status.outputs.run != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        python3 - <<'EOF'
+        import sys; sys.path.insert(0, "${{ github.action_path }}/../shared")
+        from pathlib import Path
+        from store_lib import guarded_paths, revert_paths
+        allowed, denied = guarded_paths(Path("."))
+        bad = denied + [p for p in allowed if not p.startswith("wiki/")]
+        if bad:
+            print("拒绝写入：" + ", ".join(bad)); revert_paths(Path("."), bad)
+        EOF
+        if [ -z "$(git status --porcelain -- wiki)" ]; then echo "发布结果与主分支一致，不开 PR"; exit 0; fi
+        BRANCH="wiki/sync"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -B "$BRANCH"
+        git add -A wiki
+        git commit -m "wiki: 整理 ${{ steps.status.outputs.run }}"
+        git push --force origin "HEAD:refs/heads/$BRANCH"
+        PAGES=$(git diff --name-only "origin/${{ github.event.repository.default_branch }}...HEAD" -- wiki/published | grep '\.md$' | sed 's#wiki/published/##; s#\.md$##' | sort -u)
+        COUNT=$(echo "$PAGES" | grep -c . || true)
+        {
+          echo "## 摘要"
+          echo "本次更新 $COUNT 个页面（草稿 ${{ steps.status.outputs.run }}）。合并本 PR 即发布，关闭即放弃。"
+          echo
+          echo "## 预览"
+          echo "PREVIEW_PLACEHOLDER"
+          echo
+          echo "## 页面改动"
+          echo "$PAGES" | sed 's/^/- /'
+          echo
+          echo "## 待更新原因"
+          echo '```'
+          cat "$W/status.txt"
+          echo '```'
+          echo
+          echo "## 发布门槛"
+          echo "- 结构与出处校验："
+          echo '```'
+          cat "$W/check.txt"
+          echo '```'
+          echo "- 事实核对：未运行（需要时在 Store 的 wiki workflow 中手动触发）"
+          echo
+          echo "<!-- openspec-wiki: {\"run\": \"${{ steps.status.outputs.run }}\"} -->"
+        } > "$W/body.md"
+        EXISTING=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url')
+        if [ -n "$EXISTING" ]; then
+          gh pr edit "$EXISTING" --body-file "$W/body.md"; URL="$EXISTING"
+        else
+          URL=$(gh pr create --draft --base "${{ github.event.repository.default_branch }}" --head "$BRANCH" \
+            --title "wiki: ${{ steps.facts.outputs.store-id }} $COUNT 个页面待发布" --body-file "$W/body.md")
+        fi
+        echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+    - name: Vercel preview
+      if: steps.pr.outputs.url != '' && inputs.vercel-token != ''
+      shell: bash
+      env:
+        KNOWLEDGE_SNAPSHOT_DIR: ${{ steps.facts.outputs.dir }}/snapshot
+        KNOWLEDGE_STORE_WIKI: ${{ steps.facts.outputs.store-id }}=${{ github.workspace }}/wiki
+        VERCEL_TOKEN: ${{ inputs.vercel-token }}
+        VERCEL_ORG_ID: ${{ inputs.vercel-org-id }}
+        VERCEL_PROJECT_ID: ${{ inputs.vercel-project-id }}
+        GH_TOKEN: ${{ inputs.store-token }}
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        cd "$W/hub/knowledge-hub"
+        npx vercel pull --yes --environment=preview --token "$VERCEL_TOKEN" >/dev/null
+        npx vercel build --token "$VERCEL_TOKEN" >/dev/null
+        PREVIEW=$(npx vercel deploy --prebuilt --token "$VERCEL_TOKEN")
+        sed -i "s#PREVIEW_PLACEHOLDER#$PREVIEW（需内部账号登录）#" "$W/body.md"
+        gh pr edit "${{ steps.pr.outputs.url }}" --body-file "$W/body.md"
+
+    - name: Summary
+      if: always()
+      shell: bash
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        {
+          echo "## 产品 wiki 整理"
+          [ -n "${{ steps.pr.outputs.url }}" ] && echo "草稿 PR：${{ steps.pr.outputs.url }}"
+          [ -f "$W/check.txt" ] && { echo '```'; cat "$W/check.txt"; echo '```'; }
+          [ -f "$W/publish.txt" ] && { echo '```'; cat "$W/publish.txt"; echo '```'; }
+        } >> "$GITHUB_STEP_SUMMARY"

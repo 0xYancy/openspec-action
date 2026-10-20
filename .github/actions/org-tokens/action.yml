@@ -1,0 +1,42 @@
+name: 'OpenSpec Org Read Tokens'
+description: '按组织换取只读 token（只读 GitHub App 或过渡期 PAT），写入 JSON 文件供后续步骤读取；token 均已在日志中遮罩'
+author: '0xYancy'
+
+inputs:
+  orgs:
+    description: '空格分隔的组织名'
+    required: true
+  app-id:
+    description: '只读 GitHub App 的 App ID'
+    required: false
+    default: ''
+  app-private-key:
+    description: '只读 GitHub App 的私钥'
+    required: false
+    default: ''
+  read-tokens:
+    description: '过渡期凭据：JSON {"<org>": "<只读细粒度 PAT>"}'
+    required: false
+    default: ''
+
+outputs:
+  file:
+    description: 'JSON 文件路径：{"tokens": {...}, "skipped": {...}}'
+    value: ${{ steps.exchange.outputs.file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Exchange tokens
+      id: exchange
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        READ_TOKENS: ${{ inputs.read-tokens }}
+      run: |
+        FILE="$RUNNER_TEMP/org-tokens-$GITHUB_RUN_ID-$RANDOM.json"
+        python3 "${{ github.action_path }}/../shared/app_token.py" ${{ inputs.orgs }} > "$FILE"
+        chmod 600 "$FILE"
+        jq -r '.skipped | to_entries[] | "跳过组织 \(.key)：\(.value)"' "$FILE"
+        echo "file=$FILE" >> "$GITHUB_OUTPUT"

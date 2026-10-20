@@ -5,7 +5,7 @@
 
 凭据来源（环境变量，二选一或并用，后者优先）：
   APP_ID + APP_PRIVATE_KEY   只读 GitHub App：为每个组织的安装换取临时 token，
-                             权限只申请 contents / pull_requests / metadata 的读取
+                             权限只申请 contents / pull_requests / metadata / actions 的读取
   READ_TOKENS                JSON 对象 {"<org>": "<token>"}：过渡期每个组织的只读细粒度 PAT
 
 输出（stdout）：JSON {"tokens": {"<org>": "<token>"}, "skipped": {"<org>": "<原因>"}}
@@ -24,7 +24,8 @@ import urllib.error
 import urllib.request
 
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-READ_PERMISSIONS = {"contents": "read", "pull_requests": "read", "metadata": "read"}
+# actions:read 用于知识中心读取各 Store 观察 workflow 的信号 artifact。
+READ_PERMISSIONS = {"contents": "read", "pull_requests": "read", "metadata": "read", "actions": "read"}
 
 
 def b64url(data: bytes) -> str:
