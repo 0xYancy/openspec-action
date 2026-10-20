@@ -37,7 +37,17 @@ normalize_status() {
 
   # 注：openspec 框架仍输出"草稿/产品设计中/待开发/开发中/完成",
   # Notion 侧选项已迁移为"待启动/需求探索中/待开发/开发中/完成",此处做翻译
+  # Store 的需求状态：草稿 → 待启动，已批准 → 待开发，已实现 → 开发中，已归档 → 完成
   case "$value" in
+    已批准)
+      echo "待开发"
+      ;;
+    已实现)
+      echo "开发中"
+      ;;
+    已归档)
+      echo "完成"
+      ;;
     ""|null|NULL|未设置)
       if [[ "$change_path" == archive/* ]]; then
         echo "完成"
