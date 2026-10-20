@@ -84,6 +84,29 @@ def hints_for(text: str, changes: list[dict], store_repo: str) -> list[dict]:
     return found
 
 
+def collect_handled(changes: list[dict], obs_prs: list[dict]) -> tuple[set[str], list[dict], dict[str, dict]]:
+    """已处理的实现 PR、被拒绝的 (PR, change) 组合，以及各 change 打开中的观察草稿 PR。
+
+    已处理：主分支某个 change 的 implementations 中已有，或任一观察 PR（打开中或已关闭）的标记中列出过。
+    被拒绝：需求侧关闭（未合并）并加上 obs:rejected 标签的观察 PR 中的组合。
+    """
+    handled: set[str] = set()
+    for change in changes:
+        for item in change["implementations"]:
+            if isinstance(item, dict) and item.get("pr"):
+                handled.add(str(item["pr"]))
+    rejected: list[dict] = []
+    open_drafts: dict[str, dict] = {}
+    for pr in obs_prs:
+        refs = [str(r) for r in pr["marker"].get("prs") or []]
+        if pr["state"] == "closed" and not pr["merged"] and "obs:rejected" in pr["labels"]:
+            rejected += [{"pr": r, "change": pr["marker"].get("change")} for r in refs]
+        handled.update(refs)
+        if pr["state"] == "open" and pr["marker"].get("change"):
+            open_drafts[pr["marker"]["change"]] = {"number": pr["number"], "url": pr["url"], "branch": pr["branch"]}
+    return handled, rejected, open_drafts
+
+
 def fetch_pulls(repo: str, branch: str, token: str, since: dt.datetime) -> tuple[list[dict], list[dict]]:
     merged, opened = [], []
     for page in range(1, 11):
@@ -153,22 +176,9 @@ def main() -> int:
     changes = load_changes(store)
     candidates = [c for c in changes if not c["archived"] and c["status"] in CANDIDATE_STATUS]
 
-    # 已处理：主分支 implementations + Store 中带观察标记的 PR；被拒绝的 (PR, change) 组合单独记住。
-    handled: set[str] = set()
-    for change in changes:
-        for item in change["implementations"]:
-            if isinstance(item, dict) and item.get("pr"):
-                handled.add(str(item["pr"]))
-    rejected: list[dict] = []
-    open_drafts: dict[str, dict] = {}
     store_token = os.environ.get("STORE_TOKEN", "")
-    for pr in list_store_obs_prs(args.store_repo, store_token) if store_token else []:
-        refs = [str(r) for r in pr["marker"].get("prs") or []]
-        if pr["state"] == "closed" and not pr["merged"] and "obs:rejected" in pr["labels"]:
-            rejected += [{"pr": r, "change": pr["marker"].get("change")} for r in refs]
-        handled.update(refs)
-        if pr["state"] == "open" and pr["marker"].get("change"):
-            open_drafts[pr["marker"]["change"]] = {"number": pr["number"], "url": pr["url"], "branch": pr["branch"]}
+    obs_prs = list_store_obs_prs(args.store_repo, store_token) if store_token else []
+    handled, rejected, open_drafts = collect_handled(changes, obs_prs)
 
     repo_results, merged_items, signals = [], [], []
     for repo in repos:
