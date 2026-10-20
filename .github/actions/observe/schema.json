@@ -1,0 +1,64 @@
+{
+  "type": "object",
+  "properties": {
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "change": {"type": "string"},
+          "prs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pr": {"type": "string"},
+                "basis": {"type": "string"},
+                "hint": {"type": "boolean"},
+                "confidence": {"type": "string", "enum": ["高", "中", "低"]}
+              },
+              "required": ["pr", "basis", "hint", "confidence"]
+            }
+          },
+          "diffs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scenario": {"type": "string"},
+                "pr": {"type": "string"},
+                "detail": {"type": "string"}
+              },
+              "required": ["scenario", "pr", "detail"]
+            }
+          }
+        },
+        "required": ["change", "prs", "diffs"]
+      }
+    },
+    "unregistered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pr": {"type": "string"},
+          "behavior": {"type": "string"},
+          "suggestion": {"type": "string"}
+        },
+        "required": ["pr", "behavior", "suggestion"]
+      }
+    },
+    "no_draft": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pr": {"type": "string"},
+          "reason": {"type": "string"}
+        },
+        "required": ["pr", "reason"]
+      }
+    }
+  },
+  "required": ["links", "unregistered", "no_draft"]
+}

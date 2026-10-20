@@ -1,0 +1,47 @@
+name: 'OpenSpec Store Check'
+description: 'Store 的 PR 检查：openspec validate --strict、需求状态约束（主分支不允许草稿）、执行类字段、受保护文件'
+author: '0xYancy'
+
+inputs:
+  base-ref:
+    description: '比较基准（默认 origin/<PR 目标分支>）'
+    required: false
+    default: ''
+  author:
+    description: 'PR 作者登录名，用于识别自动化 PR'
+    required: false
+    default: ${{ github.event.pull_request.user.login }}
+  openspec-version:
+    description: 'OpenSpec CLI 版本（与 framework.lock 一致）'
+    required: false
+    default: '1.12.0'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install OpenSpec CLI
+      shell: bash
+      run: |
+        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
+
+    - name: Validate specs and changes
+      shell: bash
+      env:
+        OPENSPEC_TELEMETRY: '0'
+      run: |
+        if openspec validate --all --strict > "$RUNNER_TEMP/validate.txt" 2>&1; then
+          echo "### openspec validate --strict 通过" >> "$GITHUB_STEP_SUMMARY"
+        else
+          { echo "### openspec validate --strict 未通过"; echo; echo '```'; tail -60 "$RUNNER_TEMP/validate.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/validate.txt"
+          exit 1
+        fi
+
+    - name: Check status, metadata and protected files
+      shell: bash
+      run: |
+        BASE="${{ inputs.base-ref }}"
+        [ -z "$BASE" ] && BASE="origin/${{ github.base_ref || github.event.repository.default_branch }}"
+        python3 "${{ github.action_path }}/check.py" --store . --base-ref "$BASE" --author "${{ inputs.author }}" | tee -a "$GITHUB_STEP_SUMMARY"
+        exit "${PIPESTATUS[0]}"

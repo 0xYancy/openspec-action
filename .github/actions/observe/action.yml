@@ -1,0 +1,154 @@
+name: 'OpenSpec Store Observe'
+description: '只读观察 Store 登记的实现仓：新合并的 PR 交给 Agent 匹配需求，结果以草稿 PR 写入 Store；打开中的 PR 作为进行中信号'
+author: '0xYancy'
+
+inputs:
+  store-token:
+    description: 'Store 仓库的 GITHUB_TOKEN（contents 与 pull-requests 写权限），只用于在 Store 开草稿 PR'
+    required: false
+    default: ${{ github.token }}
+  app-id:
+    description: '只读 GitHub App 的 App ID'
+    required: false
+    default: ''
+  app-private-key:
+    description: '只读 GitHub App 的私钥'
+    required: false
+    default: ''
+  read-tokens:
+    description: '过渡期凭据：JSON {"<org>": "<只读细粒度 PAT>"}'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Agent 使用的 Anthropic API key'
+    required: true
+  model:
+    description: 'Agent 模型（可选）'
+    required: false
+    default: ''
+  dry-run:
+    description: 'true 时只输出匹配结果，不开 PR'
+    required: false
+    default: 'false'
+  lookback-days:
+    description: '没有位置记录时回看的天数'
+    required: false
+    default: '14'
+
+outputs:
+  to-match:
+    description: '本次交给 Agent 匹配的 PR 数量'
+    value: ${{ steps.prepare.outputs.to-match }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check dependencies
+      shell: bash
+      run: |
+        for bin in python3 git gh openssl; do command -v "$bin" >/dev/null || { echo "缺少 $bin"; exit 1; }; done
+        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        mkdir -p "$RUNNER_TEMP/openspec-obs/out"
+
+    - name: Exchange read-only tokens per org
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        READ_TOKENS: ${{ inputs.read-tokens }}
+      run: |
+        ORGS=$(python3 -c "
+        import sys; sys.path.insert(0, '${{ github.action_path }}/../shared')
+        from store_lib import load_repos
+        from pathlib import Path
+        print(' '.join(sorted({r['slug'].split('/')[0] for r in load_repos(Path('.'))})))
+        ")
+        echo "组织：${ORGS:-（未登记实现仓）}"
+        python3 "${{ github.action_path }}/../shared/app_token.py" $ORGS > "$RUNNER_TEMP/openspec-obs/org-tokens.json"
+
+    - name: Restore observe state
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/openspec-obs/state
+        key: openspec-obs-${{ github.repository }}-${{ github.run_id }}
+        restore-keys: openspec-obs-${{ github.repository }}-
+
+    - name: Prepare facts
+      id: prepare
+      shell: bash
+      env:
+        STORE_TOKEN: ${{ inputs.store-token }}
+        LOOKBACK_DAYS: ${{ inputs.lookback-days }}
+      run: |
+        export ORG_TOKENS="$(cat "$RUNNER_TEMP/openspec-obs/org-tokens.json")"
+        mkdir -p "$RUNNER_TEMP/openspec-obs/state"
+        RESULT=$(python3 "${{ github.action_path }}/prepare.py" \
+          --store . --store-repo "${{ github.repository }}" \
+          --state "$RUNNER_TEMP/openspec-obs/state/state.json" \
+          --out "$RUNNER_TEMP/openspec-obs/out")
+        echo "$RESULT"
+        echo "to-match=$(echo "$RESULT" | jq -r '.to_match')" >> "$GITHUB_OUTPUT"
+        {
+          echo "prompt<<PROMPT_EOF"
+          sed "s#{{INPUT}}#$RUNNER_TEMP/openspec-obs/out/input.json#" "${{ github.action_path }}/prompt.md"
+          echo "PROMPT_EOF"
+          echo "schema=$(jq -c . "${{ github.action_path }}/schema.json")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Agent drafts conclusions
+      id: agent
+      if: steps.prepare.outputs.to-match != '0'
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic-api-key }}
+        prompt: ${{ steps.prepare.outputs.prompt }}
+        claude_args: |
+          --allowedTools Read
+          --max-turns 30
+          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+          --json-schema '${{ steps.prepare.outputs.schema }}'
+
+    - name: Write draft PRs
+      if: steps.prepare.outputs.to-match != '0'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        AGENT_RESULT: ${{ steps.agent.outputs.structured_output }}
+      run: |
+        printf '%s' "$AGENT_RESULT" > "$RUNNER_TEMP/openspec-obs/out/result.json"
+        DRY=""; [ "${{ inputs.dry-run }}" = "true" ] && DRY="--dry-run"
+        python3 "${{ github.action_path }}/write.py" \
+          --store . --store-repo "${{ github.repository }}" \
+          --base "${{ github.event.repository.default_branch }}" \
+          --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
+          --result "$RUNNER_TEMP/openspec-obs/out/result.json" \
+          --state "$RUNNER_TEMP/openspec-obs/state/state.json" \
+          --report "$RUNNER_TEMP/openspec-obs/out/report.md" $DRY
+
+    - name: Save observe state
+      if: inputs.dry-run != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/openspec-obs/state
+        key: openspec-obs-${{ github.repository }}-${{ github.run_id }}
+
+    - name: Upload signals
+      uses: actions/upload-artifact@v4
+      with:
+        name: openspec-observe-signals
+        path: ${{ runner.temp }}/openspec-obs/out/signals.json
+        retention-days: 14
+
+    - name: Summary
+      if: always()
+      shell: bash
+      run: |
+        OUT="$RUNNER_TEMP/openspec-obs/out"
+        {
+          [ -f "$OUT/report.md" ] && cat "$OUT/report.md" || echo "## 实现观察"$'\n\n'"本次没有新合并的待匹配 PR，未调用 Agent。"
+          echo
+          echo "### 仓库读取结果"
+          echo "| 仓库 | 结果 | 说明 |"
+          echo "|---|---|---|"
+          [ -f "$OUT/summary.json" ] && jq -r '.repos[] | "| \(.repo) | \(if .ok then "成功" else "跳过" end) | \(if .ok then "新合并 \(.new) / 打开中 \(.open)" else .error end) |"' "$OUT/summary.json"
+        } >> "$GITHUB_STEP_SUMMARY"

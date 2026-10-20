@@ -1,0 +1,76 @@
+name: 'OpenSpec Store Accept & Archive'
+description: '需求侧验收后起草归档草稿 PR：归档 change、合并 delta 到主 specs、写 changelog、状态置为已归档'
+author: '0xYancy'
+
+inputs:
+  change:
+    description: '要归档的 change 名称'
+    required: true
+  store-token:
+    description: 'Store 仓库的 GITHUB_TOKEN（contents 与 pull-requests 写权限）'
+    required: false
+    default: ${{ github.token }}
+  openspec-version:
+    description: 'OpenSpec CLI 版本（与 framework.lock 一致）'
+    required: false
+    default: '1.12.0'
+
+outputs:
+  pr-url:
+    description: '归档草稿 PR 地址'
+    value: ${{ steps.pr.outputs.url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install OpenSpec CLI
+      shell: bash
+      run: |
+        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
+        openspec --version
+
+    - name: Archive change
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        OPENSPEC_TELEMETRY: '0'
+        CHANGE: ${{ inputs.change }}
+      run: |
+        case "$CHANGE" in *[!a-z0-9-]*|'') echo "change 名称只能包含小写字母、数字和连字符"; exit 1;; esac
+        python3 "${{ github.action_path }}/archive.py" --store . --store-repo "${{ github.repository }}" \
+          --change "$CHANGE" --body "$RUNNER_TEMP/archive-body.md"
+
+    - name: Open draft PR
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        CHANGE: ${{ inputs.change }}
+      run: |
+        python3 - <<'EOF'
+        import sys; sys.path.insert(0, "${{ github.action_path }}/../shared")
+        from pathlib import Path
+        from store_lib import guarded_paths, revert_paths
+        allowed, denied = guarded_paths(Path("."))
+        if denied:
+            print("拒绝写入：" + ", ".join(denied)); revert_paths(Path("."), denied)
+        EOF
+        BRANCH="archive/$CHANGE"
+        TITLE=$(python3 -c "import yaml,glob; p=sorted(glob.glob('openspec/changes/archive/*-$CHANGE/.openspec.yaml'))[-1]; print((yaml.safe_load(open(p)) or {}).get('title') or '$CHANGE')")
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -B "$BRANCH"
+        git add -A openspec/changes openspec/specs
+        git commit -m "archive: $TITLE"
+        git push --force origin "HEAD:refs/heads/$BRANCH"
+        EXISTING=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url')
+        if [ -n "$EXISTING" ]; then
+          gh pr edit "$EXISTING" --body-file "$RUNNER_TEMP/archive-body.md"
+          URL="$EXISTING"
+        else
+          URL=$(gh pr create --draft --base "${{ github.event.repository.default_branch }}" --head "$BRANCH" \
+            --title "archive: $TITLE" --body-file "$RUNNER_TEMP/archive-body.md")
+        fi
+        echo "url=$URL" >> "$GITHUB_OUTPUT"
+        { echo "## 验收归档"; echo; echo "已起草归档 PR：$URL"; echo; cat "$RUNNER_TEMP/archive-body.md"; } >> "$GITHUB_STEP_SUMMARY"
