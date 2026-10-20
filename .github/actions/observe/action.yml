@@ -19,6 +19,10 @@ inputs:
     description: '过渡期凭据：JSON {"<org>": "<只读细粒度 PAT>"}'
     required: false
     default: ''
+  read-token:
+    description: '单个读取 token（例如维护者的 classic PAT，需 repo 范围），用于所有组织'
+    required: false
+    default: ''
   anthropic-api-key:
     description: 'Agent 使用的 Anthropic API key'
     required: true
@@ -56,6 +60,7 @@ runs:
         APP_ID: ${{ inputs.app-id }}
         APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
         READ_TOKENS: ${{ inputs.read-tokens }}
+        READ_TOKEN: ${{ inputs.read-token }}
       run: |
         ORGS=$(python3 -c "
         import sys; sys.path.insert(0, '${{ github.action_path }}/../shared')

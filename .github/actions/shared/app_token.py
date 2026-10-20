@@ -3,10 +3,12 @@
 
 用法：python3 app_token.py <org> [<org> ...]
 
-凭据来源（环境变量，二选一或并用，后者优先）：
+凭据来源（环境变量，可并用；同一组织按以下顺序取第一个可用的）：
   APP_ID + APP_PRIVATE_KEY   只读 GitHub App：为每个组织的安装换取临时 token，
                              权限只申请 contents / pull_requests / metadata / actions 的读取
-  READ_TOKENS                JSON 对象 {"<org>": "<token>"}：过渡期每个组织的只读细粒度 PAT
+  READ_TOKENS                JSON 对象 {"<org>": "<token>"}：每个组织一个只读细粒度 PAT
+  READ_TOKEN                 单个 token（例如维护者的 classic PAT），用于所有组织；
+                             自动化只用它读取，但 classic PAT 的 repo 范围本身含写权限
 
 输出（stdout）：JSON {"tokens": {"<org>": "<token>"}, "skipped": {"<org>": "<原因>"}}
 每个 token 都会以 ::add-mask:: 写入日志遮罩，原因中不包含凭据。
@@ -101,11 +103,16 @@ def main(orgs: list[str]) -> dict:
         if org in orgs and token and org not in tokens:
             tokens[org] = token
             mask(token)
+    single = os.environ.get("READ_TOKEN", "").strip()
+    if single:
+        mask(single)
+        for org in orgs:
+            tokens.setdefault(org, single)
     for org in orgs:
         if org in tokens:
             skipped.pop(org, None)
         elif org not in skipped:
-            skipped[org] = "未安装只读 GitHub App，也未配置该组织的只读凭据"
+            skipped[org] = "没有可用的读取凭据（OPENSPEC_READ_TOKEN、该组织的 PAT 或只读 GitHub App 均未配置）"
     return {"tokens": tokens, "skipped": skipped}
 
 

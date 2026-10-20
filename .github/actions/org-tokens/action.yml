@@ -1,5 +1,5 @@
 name: 'OpenSpec Org Read Tokens'
-description: '按组织换取只读 token（只读 GitHub App 或过渡期 PAT），写入 JSON 文件供后续步骤读取；token 均已在日志中遮罩'
+description: '按组织换取读取 token（只读 GitHub App、按组织的 PAT 或单个 classic PAT），写入 JSON 文件供后续步骤读取；token 均已在日志中遮罩'
 author: '0xYancy'
 
 inputs:
@@ -18,6 +18,10 @@ inputs:
     description: '过渡期凭据：JSON {"<org>": "<只读细粒度 PAT>"}'
     required: false
     default: ''
+  read-token:
+    description: '单个读取 token（例如维护者的 classic PAT，需 repo 范围），用于所有组织'
+    required: false
+    default: ''
 
 outputs:
   file:
@@ -34,6 +38,7 @@ runs:
         APP_ID: ${{ inputs.app-id }}
         APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
         READ_TOKENS: ${{ inputs.read-tokens }}
+        READ_TOKEN: ${{ inputs.read-token }}
       run: |
         FILE="$RUNNER_TEMP/org-tokens-$GITHUB_RUN_ID-$RANDOM.json"
         python3 "${{ github.action_path }}/../shared/app_token.py" ${{ inputs.orgs }} > "$FILE"
