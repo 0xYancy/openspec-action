@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,6 +125,67 @@ def list_store_obs_prs(repo: str, token: str) -> list[dict]:
         if len(items) < 100:
             break
     return result
+
+
+def load_draft_changes(store: Path, repo: str, token: str, workdir: Path) -> tuple[list[dict], list[str]]:
+    """Store 中打开的需求草稿 PR 里新增的 change（主分支上还没有的），作为观察的匹配候选。
+
+    观察自己开的 PR（带 obs 标签）不算。返回 change 列表（`dir` 为 workdir 下的绝对路径，附 `draft_pr`）
+    以及这些草稿 PR 评论里观察标记列出的实现单元（已在草稿 PR 上提示过，不再重复）。
+    """
+    on_main = {c["name"] for c in load_changes(store)}
+    changes: list[dict] = []
+    commented: list[str] = []
+    for page in range(1, 4):
+        pulls = gh_request(f"/repos/{repo}/pulls?state=open&per_page=100&page={page}", token) or []
+        for pr in pulls:
+            if "obs" in [label["name"] for label in pr.get("labels") or []]:
+                continue
+            files = gh_request(f"/repos/{repo}/pulls/{pr['number']}/files?per_page=100", token) or []
+            names = sorted({
+                f["filename"].split("/")[2]
+                for f in files
+                if f["filename"].startswith("openspec/changes/") and f["filename"].count("/") >= 3
+                and f["filename"].split("/")[2] != "archive"
+            } - on_main)
+            if not names:
+                continue
+            ref = f"refs/openspec-obs/pr-{pr['number']}"
+            shallow = subprocess.run(["git", "-C", str(store), "rev-parse", "--is-shallow-repository"],
+                                     capture_output=True, text=True).stdout.strip() == "true"
+            target = workdir / f"pr-{pr['number']}"
+            try:
+                subprocess.run(["git", "-C", str(store), "fetch", "-q", *(["--depth=1"] if shallow else []), "origin",
+                                f"pull/{pr['number']}/head:{ref}"], check=True, capture_output=True)
+                target.mkdir(parents=True, exist_ok=True)
+                archive = subprocess.run(["git", "-C", str(store), "archive", ref, *[f"openspec/changes/{n}" for n in names]],
+                                         check=True, capture_output=True).stdout
+                subprocess.run(["tar", "-x", "-C", str(target)], input=archive, check=True)
+            except subprocess.CalledProcessError as error:
+                print(f"跳过草稿 PR #{pr['number']}：{(error.stderr or b'').decode(errors='replace').strip()[:200]}", file=sys.stderr)
+                continue
+            finally:
+                subprocess.run(["git", "-C", str(store), "update-ref", "-d", ref], capture_output=True)
+            for name in names:
+                directory = target / "openspec" / "changes" / name
+                meta = load_yaml(directory / ".openspec.yaml")
+                changes.append({
+                    "name": name,
+                    "dir": str(directory),
+                    "archived": False,
+                    "meta": meta,
+                    "status": str(meta.get("status") or "草稿"),
+                    "repositories": [str(r) for r in meta.get("repositories") or []],
+                    "implementations": meta.get("implementations") or [],
+                    "draft_pr": {"number": pr["number"], "url": pr["html_url"]},
+                })
+            for comment in gh_request(f"/repos/{repo}/issues/{pr['number']}/comments?per_page=100", token) or []:
+                marker = parse_marker(comment.get("body") or "")
+                if marker:
+                    commented += [str(r) for r in marker.get("prs") or []]
+        if len(pulls) < 100:
+            break
+    return changes, commented
 
 
 # ---------------------------------------------------------------- 标记与引用

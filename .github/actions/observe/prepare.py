@@ -31,6 +31,7 @@ from store_lib import (  # noqa: E402
     gh_request,
     list_store_obs_prs,
     load_changes,
+    load_draft_changes,
     load_repos,
 )
 
@@ -40,7 +41,9 @@ TECH_TITLE = re.compile(r"^(chore|build|ci|test|tests|style)(\([^)]*\))?!?:", re
 TECH_LABELS = {"dependencies", "deps", "ci", "tests", "test", "chore"}
 TECH_FILE = re.compile(
     r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum|poetry\.lock|\.github/|"
-    r"__tests__/|tests?/|.*\.(test|spec)\.[a-z]+$|\.gitignore$|\.editorconfig$)"
+    r"__tests__/|tests?/|.*\.(test|spec)\.[a-z]+$|\.gitignore$|\.editorconfig$|"
+    # 开发侧的 OpenSpec 与 Agent 工具链（需求以 Store 为准）
+    r"openspec/|\.claude/|\.agents/|\.codex/|AGENTS\.md$|CLAUDE\.md$)"
 )
 MAX_PATCH = 6000
 CST = dt.timezone(dt.timedelta(hours=8))
@@ -256,6 +259,15 @@ def main() -> int:
     store_token = os.environ.get("STORE_TOKEN", "")
     obs_prs = list_store_obs_prs(args.store_repo, store_token) if store_token else []
     handled, rejected, open_drafts = collect_handled(changes, obs_prs)
+    # 需求草稿 PR 里的 change 也作为候选：关联结果以评论提示在草稿 PR 上，不写入主分支
+    draft_changes, commented = [], []
+    if store_token:
+        try:
+            draft_changes, commented = load_draft_changes(store, args.store_repo, store_token, out / "drafts")
+        except GitHubError as error:
+            print(f"读取需求草稿 PR 失败，本次不把草稿作为候选：{error}", file=sys.stderr)
+    handled.update(commented)
+    candidates += draft_changes
 
     repo_results, merged_items, signals = [], [], []
     for repo in repos:
@@ -356,6 +368,7 @@ def main() -> int:
                 "id": change["meta"].get("ID"),
                 "status": change["status"],
                 "repositories": change["repositories"],
+                **({"draft_pr": change["draft_pr"]} if change.get("draft_pr") else {}),
                 **change_text(store, change),
             }
         )
@@ -374,7 +387,7 @@ def main() -> int:
         json.dumps({"repos": repo_results, "skipped_orgs": skipped_orgs, "to_match": len(merged_items), "signals": len(signals)}, ensure_ascii=False, indent=2)
     )
     (out / "state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2))
-    print(json.dumps({"to_match": len(merged_items), "signals": len(signals), "repos": len(repo_results)}))
+    print(json.dumps({"to_match": len(merged_items), "signals": len(signals), "repos": len(repo_results), "draft_candidates": len(draft_changes)}))
     return 0
 
 

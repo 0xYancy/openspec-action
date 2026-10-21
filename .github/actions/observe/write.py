@@ -173,6 +173,32 @@ def apply_link(store: Path, args, change: dict, link: dict, open_draft: dict | N
     return note
 
 
+def apply_draft_comment(store: Path, change: dict, link: dict) -> str:
+    """草稿 change 还不在主分支：只在它的草稿 PR 上评论提示，不改需求内容与状态。"""
+    rows = "\n".join(
+        f"| [{p['pr']}]({p['url']}) {p['title']} | {p['merged_at'][:10]} | {'提示信号：' if p.get('hint') else '推断：'}{p['basis']} | {p['confidence']} |"
+        for p in link["prs"]
+    )
+    diffs = "\n".join(f"- **{d['scenario']}**（{d['pr']}）：{d['detail']}" for d in link["diffs"]) or "未发现差异。"
+    refs = [p["pr"] for p in link["prs"]]
+    body = f"""## 实现观察：发现可能对应本草稿的实现
+
+本草稿 `{change['change']}` 还未批准，实现观察不会修改它。以下实现已合入观察分支，可能就是本需求的实现，供确认需求时参考；批准合并后，观察会按正常流程关联。
+
+| 实现 | 时间 | 匹配依据 | 置信度 |
+|---|---|---|---|
+{rows}
+
+### 实现与需求的差异
+{diffs}
+
+{render_marker({"change": change["change"], "prs": refs})}
+"""
+    number = change["draft_pr"]["number"]
+    run(store, "gh", "pr", "comment", str(number), "--body-file", "-", input_text=body)
+    return f"- `{change['change']}`（草稿）：{', '.join(refs)} → 已在 {change['draft_pr']['url']} 评论提示"
+
+
 def ref_repo(ref: str) -> str:
     """实现单元标识所在仓库：`owner/repo#12`（PR）或 `owner/repo@abc1234..def5678`（直接推送的提交）。"""
     return re.split(r"[#@]", ref, maxsplit=1)[0]
@@ -245,7 +271,8 @@ def main() -> int:
     lines = [f"## 实现观察{'（dry-run，未写入）' if args.dry_run else ''}", ""]
     if args.dry_run:
         for link in checked["links"]:
-            lines.append(f"- 将关联 `{link['change']}`：" + "、".join(f"{p['pr']}（{p['confidence']}，{p['basis']}）" for p in link["prs"]))
+            target = "（草稿，将在草稿 PR 评论）" if changes[link["change"]].get("draft_pr") else ""
+            lines.append(f"- 将关联 `{link['change']}`{target}：" + "、".join(f"{p['pr']}（{p['confidence']}，{p['basis']}）" for p in link["prs"]))
             lines += [f"  - 差异：{d['scenario']}（{d['pr']}）{d['detail']}" for d in link["diffs"]]
         lines += [f"- 将起草未登记行为变化：{u['pr']}：{u['behavior']}" for u in checked["unregistered"]]
     else:
@@ -256,7 +283,11 @@ def main() -> int:
             ensure_labels(store)
         for link in checked["links"]:
             try:
-                lines.append(apply_link(store, args, changes[link["change"]], link, data["open_drafts"].get(link["change"]), now))
+                change = changes[link["change"]]
+                if change.get("draft_pr"):
+                    lines.append(apply_draft_comment(store, change, link))
+                else:
+                    lines.append(apply_link(store, args, change, link, data["open_drafts"].get(link["change"]), now))
             except subprocess.CalledProcessError as error:
                 lines.append(f"- `{link['change']}` 写入失败：{(error.stderr or '').strip()[:300]}")
         for item in checked["unregistered"]:
