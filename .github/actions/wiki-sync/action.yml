@@ -240,7 +240,7 @@ runs:
           echo "本次更新 $COUNT 个页面（草稿 ${{ steps.status.outputs.run }}）。合并本 PR 即发布，关闭即放弃。"
           echo
           echo "## 预览"
-          echo "PREVIEW_PLACEHOLDER"
+          if [ -n "${{ inputs.vercel-token }}" ]; then echo "PREVIEW_PLACEHOLDER"; else echo "未配置 Vercel，跳过预览。"; fi
           echo
           echo "## 页面改动"
           echo "$PAGES" | sed 's/^/- /'
