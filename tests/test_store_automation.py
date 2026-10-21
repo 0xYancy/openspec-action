@@ -245,6 +245,14 @@ class ArchiveTest(unittest.TestCase):
             self.assertIn(f"能力甲：{long_text}", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
             self.assertIn("能力丙：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-c/spec.md").read_text(encoding="utf-8"))
 
+    def test_wiki_uncovered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(archive.wiki_uncovered(root, "o/s", ["cap-a"]), [])
+            write_file(root, "wiki/structure.yaml", "pages:\n  - id: p\n    capabilities:\n      - o/s/cap-a\n      - o/s/cap-ab\n")
+            self.assertEqual(archive.wiki_uncovered(root, "o/s", ["cap-a", "cap-b", "cap"]), ["cap-b", "cap"])
+
+
 
 class CommitBatchTest(unittest.TestCase):
     """直接推送的提交：同一天内连续的直接推送合成一个实现单元，PR 的提交切断连续。"""

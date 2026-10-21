@@ -75,6 +75,15 @@ def fill_purposes(store: Path, proposal: str, capabilities: list[str]) -> list[s
     return missing
 
 
+def wiki_uncovered(store: Path, store_repo: str, capabilities: list[str]) -> list[str]:
+    """不在 wiki/structure.yaml 任何页面中的能力：归档后产品 wiki 不会记录它们的迭代。Store 没有 wiki 时不提示。"""
+    structure = store / "wiki" / "structure.yaml"
+    if not structure.is_file():
+        return []
+    text = structure.read_text(encoding="utf-8")
+    return [c for c in capabilities if not re.search(rf"^\s*-\s*{re.escape(f'{store_repo}/{c}')}\s*(#.*)?$", text, re.M)]
+
+
 def diffs_from_obs(store_repo: str, change: str) -> list[str]:
     token = os.environ.get("GH_TOKEN", "")
     if not token:
@@ -132,6 +141,7 @@ def main() -> int:
             append_changelog(store, capability, archived_meta, args.change, items)
 
     missing_purpose = fill_purposes(store, proposal, list(summaries))
+    uncovered = wiki_uncovered(store, args.store_repo, list(summaries))
 
     impls = [i for i in archived_meta.get("implementations") or [] if isinstance(i, dict)]
     impl_lines = "\n".join(f"- [{i.get('pr')}]({i.get('url')})：{i.get('basis') or ''}（置信度 {i.get('confidence') or '-'}）" for i in impls)
@@ -143,6 +153,7 @@ def main() -> int:
 {spec_lines}
 
 {"**需要补写 Purpose**：" + "、".join(f"`openspec/specs/{c}/spec.md`" for c in missing_purpose) + " 是新能力，proposal 中没有它的说明或说明不足 50 字，请在本 PR 中补写 Purpose，否则 Store 检查不通过。" + chr(10) if missing_purpose else ""}
+{"**未纳入产品 wiki**：" + "、".join(f"`{c}`" for c in uncovered) + " 不在 `wiki/structure.yaml` 的任何页面中，合并后产品 wiki 不会记录本次迭代。需要记录时，在本 PR 中把它们加入 `wiki/structure.yaml` 的合适页面。" + chr(10) if uncovered else ""}
 ## 关联的实现 PR
 {impl_lines or '未观察到关联的实现 PR（允许直接归档）。'}
 
