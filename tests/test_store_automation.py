@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import subprocess
 import sys
@@ -117,6 +118,17 @@ class ValidateAgentResultTest(unittest.TestCase):
         self.assertEqual(result["unregistered"], [])
         self.assertEqual([n["pr"] for n in result["no_draft"]], ["o/dapp#3"])
         self.assertTrue(any("o/dapp#2 未被模型归类" in note for note in notes))
+
+    def test_new_change_id_is_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            write_file(store, "openspec/changes/a/.openspec.yaml", "ID: 20261021-0001\n")
+            now = dt.datetime(2026, 10, 21, tzinfo=dt.timezone.utc)
+            used: set[str] = set()
+            ids = [write.new_change_id(store, now, used) for _ in range(50)]
+            self.assertEqual(len(set(ids)), 50)
+            self.assertNotIn("20261021-0001", ids)
+            self.assertTrue(all(i.startswith("20261021-") for i in ids))
 
     def test_unregistered_carries_merge_time(self) -> None:
         result, _ = write.validate(

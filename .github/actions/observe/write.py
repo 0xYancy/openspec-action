@@ -15,6 +15,7 @@ import argparse
 import datetime as dt
 import json
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -211,7 +212,21 @@ def ref_suffix(ref: str) -> str:
     return tail.split("..")[-1].lower()
 
 
-def apply_unregistered(store: Path, args, item: dict, now: dt.datetime) -> str:
+def new_change_id(store: Path, now: dt.datetime, used: set[str]) -> str:
+    """生成 Store 内唯一的 change ID（YYYYMMDD-xxxx）。Notion 按 ID 认任务，重复会让多个 change 写进同一条任务。"""
+    taken = set(used)
+    for meta_path in (store / "openspec" / "changes").glob("**/.openspec.yaml"):
+        value = (load_yaml(meta_path) or {}).get("ID")
+        if value:
+            taken.add(str(value))
+    while True:
+        candidate = f"{now:%Y%m%d}-{secrets.token_hex(2)}"
+        if candidate not in taken:
+            used.add(candidate)
+            return candidate
+
+
+def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids: set[str]) -> str:
     repo = ref_repo(item["pr"])
     name = f"obs-{repo.split('/')[1].lower()}-{ref_suffix(item['pr'])}"
     branch = f"obs/{name}"
@@ -222,7 +237,7 @@ def apply_unregistered(store: Path, args, item: dict, now: dt.datetime) -> str:
         "schema": "store",
         "created": now.date().isoformat(),
         "title": f"补登：{item['title']}"[:80],
-        "ID": f"{now:%Y%m%d}-{int(now.timestamp()) & 0xFFFF:04x}",
+        "ID": new_change_id(store, now, used_ids),
         "type": "feature",
         "priority": "",
         "assignee": "",
@@ -296,9 +311,10 @@ def main() -> int:
                     lines.append(apply_link(store, args, change, link, data["open_drafts"].get(link["change"]), now))
             except subprocess.CalledProcessError as error:
                 lines.append(f"- `{link['change']}` 写入失败：{(error.stderr or '').strip()[:300]}")
+        used_ids: set[str] = set()
         for item in checked["unregistered"]:
             try:
-                lines.append(apply_unregistered(store, args, item, now))
+                lines.append(apply_unregistered(store, args, item, now, used_ids))
             except subprocess.CalledProcessError as error:
                 lines.append(f"- {item['pr']} 写入失败：{(error.stderr or '').strip()[:300]}")
     lines += [f"- 无需起草：{n['pr']}（{n['reason']}）" for n in checked["no_draft"]]
