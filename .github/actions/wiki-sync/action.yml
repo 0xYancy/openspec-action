@@ -197,6 +197,8 @@ runs:
         done
         # 写成的页面照常发布；未写成的移出本次草稿，仍处于待更新状态，下次运行（例如合并本次 wiki PR 后）单独重试
         echo "failed=$(echo $FAILED)" >> "$GITHUB_OUTPUT"
+        # 始终写出 remaining：表达式中空值与 '0' 比较会按数字相等，导致发布被跳过
+        if [ -z "$FAILED" ]; then echo "remaining=all" >> "$GITHUB_OUTPUT"; fi
         if [ -n "$FAILED" ]; then
           echo "以下页面撰写失败，移出本次草稿：$FAILED"
           python3 - "$DRAFT" $FAILED <<'EOF'
