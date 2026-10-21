@@ -211,12 +211,13 @@ if [[ -n "$assignee" ]]; then
     | head -1)
 fi
 
-# 查找是否已存在
+# 查找是否已存在。开发可能为了分段排期复制出同 ID 的任务（如「… - 2」），
+# 固定取最早创建的原任务，复制出的分段不被同步改写。
 existing=$(curl -s -X POST "https://api.notion.com/v1/data_sources/$TASK_DS_ID/query" \
   -H "Authorization: Bearer $NOTION_KEY" \
   -H "Notion-Version: $NOTION_VERSION" \
   -H "Content-Type: application/json" \
-  -d "$(jq -n --arg id "$id" '{"filter":{"property":"ID","rich_text":{"equals":$id}}}')" \
+  -d "$(jq -n --arg id "$id" '{"filter":{"property":"ID","rich_text":{"equals":$id}},"sorts":[{"timestamp":"created_time","direction":"ascending"}]}')" \
   | jq -r '.results[0].id // empty')
 
 # ── 已存在：增量更新 ──────────────────────────────────────────
