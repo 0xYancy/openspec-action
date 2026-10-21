@@ -181,8 +181,8 @@ runs:
         读取 $CTX，改写 $DRAFT/pages/$ID.md。
         只允许修改 $DRAFT/pages/$ID.md，不得修改其他任何文件，不得运行命令。
         不得写出处原文中没有的规则、数字或条件。"
-          # 吸收变化多的概览页可能用完轮数：失败时以 2.5 倍轮数重试一次
-          for TURNS in ${{ inputs.max-turns }} $(( ${{ inputs.max-turns }} * 5 / 2 )); do
+          # 能力多的概览页可能用完轮数：失败时依次以 2.5 倍、5 倍轮数重试
+          for TURNS in ${{ inputs.max-turns }} $(( ${{ inputs.max-turns }} * 5 / 2 )) $(( ${{ inputs.max-turns }} * 5 )); do
             if claude -p "$PROMPT" --add-dir "$W/hub" --allowedTools Read,Edit,Write \
                 --max-turns "$TURNS" --model "${{ inputs.model }}" --output-format text; then
               OK=1; break
