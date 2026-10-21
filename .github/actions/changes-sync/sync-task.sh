@@ -29,6 +29,14 @@ BRANCH=$2
 # 从 stdin 读取 JSON 元数据
 entry=$(cat)
 
+# Notion 状态的推进顺序，未知或空值为 0
+status_rank() {
+  case "$1" in
+    待启动) echo 1 ;; 需求探索中) echo 2 ;; 待开发) echo 3 ;;
+    开发中) echo 4 ;; 测试中) echo 5 ;; 完成) echo 6 ;; *) echo 0 ;;
+  esac
+}
+
 normalize_status() {
   local raw="$1"
   local change_path="$2"
@@ -254,7 +262,8 @@ if [[ -n "$existing" ]]; then
     changed_fields+=("title")
     echo "META_DIFF=title|${cur_title:-空}|${title}" >&2
   fi
-  if [[ "$cur_status" != "$status" && ( "$cur_status" != "完成" || "$status" == "测试中" ) ]]; then
+  # 状态只前进不后退：开发在 Notion 手动推进的状态（如开发中）不被需求侧较早的状态覆盖
+  if (( $(status_rank "$status") > $(status_rank "$cur_status") )); then
     update_props=$(echo "$update_props" | jq --arg v "$status" \
       '. + {"Status": {"status": {"name": $v}}}')
     changed_fields+=("status")
