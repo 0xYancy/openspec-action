@@ -169,6 +169,7 @@ runs:
         DRAFT="$GITHUB_WORKSPACE/wiki/drafts/${{ steps.status.outputs.run }}"
         npm install -g "@anthropic-ai/claude-code@${{ inputs.claude-code-version }}" >/dev/null
         cd "$GITHUB_WORKSPACE"
+        FAILED=""
         # 每个页面单独运行一次：积压多页时单次运行容易耗尽轮数。
         for CTX in "$DRAFT"/context/*.json; do
           ID=$(basename "$CTX" .json)
@@ -179,10 +180,18 @@ runs:
         读取 $CTX，改写 $DRAFT/pages/$ID.md。
         只允许修改 $DRAFT/pages/$ID.md，不得修改其他任何文件，不得运行命令。
         不得写出处原文中没有的规则、数字或条件。"
-          claude -p "$PROMPT" --add-dir "$W/hub" --allowedTools Read,Edit,Write \
-            --max-turns ${{ inputs.max-turns }} --model "${{ inputs.model }}" --output-format text
+          # 吸收变化多的概览页可能用完轮数：失败时以 2.5 倍轮数重试一次
+          for TURNS in ${{ inputs.max-turns }} $(( ${{ inputs.max-turns }} * 5 / 2 )); do
+            if claude -p "$PROMPT" --add-dir "$W/hub" --allowedTools Read,Edit,Write \
+                --max-turns "$TURNS" --model "${{ inputs.model }}" --output-format text; then
+              OK=1; break
+            fi
+            OK=0; echo "$ID 在 $TURNS 轮内未完成"
+          done
+          [ "$OK" = 1 ] || FAILED="$FAILED $ID"
           echo "::endgroup::"
         done
+        if [ -n "$FAILED" ]; then echo "以下页面撰写失败：$FAILED"; exit 1; fi
 
     - name: Check gates and publish to branch
       id: publish
