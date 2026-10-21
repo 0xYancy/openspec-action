@@ -174,6 +174,7 @@ runs:
         for CTX in "$DRAFT"/context/*.json; do
           ID=$(basename "$CTX" .json)
           echo "::group::撰写 $ID"
+          cp "$DRAFT/pages/$ID.md" "$W/skeleton-$ID.md"
           PROMPT="你在为产品 wiki 撰写草稿页面 $ID。草稿目录：$DRAFT。
         先完整阅读 $W/hub/knowledge-hub/wiki/README.md，
         再按 $W/hub/.claude/skills/opsx-manage-wiki-sync/SKILL.md 的第 3 步（概览页）与第 4 步（迭代记录页）撰写：
@@ -189,6 +190,8 @@ runs:
             OK=0; echo "$ID 在 $TURNS 轮内未完成"
           done
           [ "$OK" = 1 ] || FAILED="$FAILED $ID"
+          # 条目标识注释由骨架确定，Agent 改动时恢复原值
+          python3 "${{ github.action_path }}/restore_entry_keys.py" "$W/skeleton-$ID.md" "$DRAFT/pages/$ID.md"
           echo "::endgroup::"
         done
         if [ -n "$FAILED" ]; then echo "以下页面撰写失败：$FAILED"; exit 1; fi

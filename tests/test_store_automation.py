@@ -254,6 +254,17 @@ class ArchiveTest(unittest.TestCase):
 
 
 
+class RestoreEntryKeysTest(unittest.TestCase):
+    def test_restores_changed_keys_by_title(self) -> None:
+        restore = load("restore_entry_keys", ACTIONS / "wiki-sync" / "restore_entry_keys.py").restore
+        skeleton = "# P\n\n## V2-a\n<!-- entry: 0:o/s:2 -->\n\n待撰写\n\n## V1-b\n<!-- entry: 0:o/s:1 -->\n"
+        page = "# P\n\n## V2-a\n<!-- entry: 0:o/s:9 -->\n\n正文\n\n## V1-b\n<!-- entry: 0:o/s:1 -->\n\n## V0-x\n<!-- entry: 0:o/s:0 -->\n"
+        text, fixed = restore(skeleton, page)
+        self.assertEqual(fixed, 1)
+        self.assertIn("## V2-a\n<!-- entry: 0:o/s:2 -->\n\n正文", text)
+        self.assertIn("## V0-x\n<!-- entry: 0:o/s:0 -->", text)
+
+
 class CommitBatchTest(unittest.TestCase):
     """直接推送的提交：同一天内连续的直接推送合成一个实现单元，PR 的提交切断连续。"""
 
