@@ -236,10 +236,14 @@ class ArchiveTest(unittest.TestCase):
             root = Path(tmp)
             write_file(root, "openspec/specs/cap-a/spec.md", "# cap-a\n\n## Purpose\nTBD - created by archiving change x. Update Purpose after archive.\n")
             write_file(root, "openspec/specs/cap-b/spec.md", "# cap-b\n\n## Purpose\nTBD - created by archiving change x. Update Purpose after archive.\n")
-            proposal = "- **能力甲**（标识 `cap-a`）：用户可以提前赎回并支付手续费\n"
-            missing = archive.fill_purposes(root, proposal, ["cap-a", "cap-b"])
-            self.assertEqual(missing, ["cap-b"])
-            self.assertIn("能力甲：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
+            write_file(root, "openspec/specs/cap-c/spec.md", "# cap-c\n\n## Purpose\nTBD - created by archiving change x. Update Purpose after archive.\n")
+            long_text = "用户可以在锁定期内提前赎回本金，按剩余天数支付手续费，手续费归入协议金库，赎回到账前份额被冻结且不再计息"
+            proposal = (f"- **能力甲**（标识 `cap-a`）：{long_text}\n"
+                        "- **能力丙**（标识 `cap-c`）：用户可以提前赎回并支付手续费\n")
+            missing = archive.fill_purposes(root, proposal, ["cap-a", "cap-b", "cap-c"])
+            self.assertEqual(missing, ["cap-b", "cap-c"])
+            self.assertIn(f"能力甲：{long_text}", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
+            self.assertIn("能力丙：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-c/spec.md").read_text(encoding="utf-8"))
 
 
 class CommitBatchTest(unittest.TestCase):
