@@ -118,6 +118,12 @@ class ValidateAgentResultTest(unittest.TestCase):
         self.assertEqual([n["pr"] for n in result["no_draft"]], ["o/dapp#3"])
         self.assertTrue(any("o/dapp#2 未被模型归类" in note for note in notes))
 
+    def test_unregistered_carries_merge_time(self) -> None:
+        result, _ = write.validate(
+            {"links": [], "unregistered": [{"pr": "o/dapp#3", "behavior": "x", "suggestion": "y"}], "no_draft": []}, self.DATA
+        )
+        self.assertEqual(result["unregistered"][0]["merged_at"], "2026-10-20T00:00:00Z")
+
     def test_diffs_only_for_kept_prs(self) -> None:
         link = self.link("tvl", "o/dapp#1")
         link["diffs"] = [{"scenario": "AC-1", "pr": "o/dapp#1", "detail": "d"}, {"scenario": "AC-2", "pr": "o/dapp#9", "detail": "d"}]

@@ -63,7 +63,7 @@ def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
         ref = item.get("pr")
         if ref in merged and ref not in seen:
             seen.add(ref)
-            unregistered.append({**item, **{k: merged[ref][k] for k in ("url", "title")}})
+            unregistered.append({**item, **{k: merged[ref][k] for k in ("url", "title", "merged_at")}})
     no_draft = []
     for item in result.get("no_draft") or []:
         ref = item.get("pr")
@@ -110,7 +110,7 @@ def unregistered_body(item: dict) -> str:
 ## 建议
 {item['suggestion']}
 
-本 PR 预置了一个草稿 change：补写 specs 并把状态改为已批准，点击 Ready for review 通过 Store 检查后即可合并；若这是已知行为或无需登记，关闭本 PR 并加上 `{REJECTED_LABEL}` 标签。
+本 PR 预置了一个补登 change：代码已合入，状态预填为已实现，实现记录已写入 `implementations`。补写 proposal、specs 与负责人等元数据，按需改名 change 目录，点击 Ready for review 通过 Store 检查后即可合并；若这是已知行为或无需登记，关闭本 PR 并加上 `{REJECTED_LABEL}` 标签。
 """
 
 
@@ -230,7 +230,12 @@ def apply_unregistered(store: Path, args, item: dict, now: dt.datetime) -> str:
         "deadline": "",
         "repositories": [repo],
         "tier": "light",
-        "status": "草稿",
+        # 补登的是已合入的实现：直接预填已实现与实现记录，需求侧只需补写需求与元数据。
+        "status": "已实现",
+        "implementations": [
+            {"pr": item["pr"], "url": item["url"], "merged_at": item.get("merged_at") or "",
+             "basis": f"补登：{item['behavior']}"[:200], "hint": False, "confidence": "高"}
+        ],
     }
     (directory / ".openspec.yaml").write_text(dump_yaml(meta), encoding="utf-8")
     (directory / "proposal.md").write_text(
