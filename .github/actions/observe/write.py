@@ -173,9 +173,20 @@ def apply_link(store: Path, args, change: dict, link: dict, open_draft: dict | N
     return note
 
 
+def ref_repo(ref: str) -> str:
+    """实现单元标识所在仓库：`owner/repo#12`（PR）或 `owner/repo@abc1234..def5678`（直接推送的提交）。"""
+    return re.split(r"[#@]", ref, maxsplit=1)[0]
+
+
+def ref_suffix(ref: str) -> str:
+    """用于分支与 change 名：PR 编号，或提交区间末个提交的短 SHA。"""
+    tail = re.split(r"[#@]", ref, maxsplit=1)[1]
+    return tail.split("..")[-1].lower()
+
+
 def apply_unregistered(store: Path, args, item: dict, now: dt.datetime) -> str:
-    repo, number = item["pr"].split("#")
-    name = f"obs-{repo.split('/')[1].lower()}-{number}"
+    repo = ref_repo(item["pr"])
+    name = f"obs-{repo.split('/')[1].lower()}-{ref_suffix(item['pr'])}"
     branch = f"obs/{name}"
     start_branch(store, args.base, branch, False)
     directory = store / "openspec" / "changes" / name
@@ -227,7 +238,7 @@ def main() -> int:
 
     # 无需起草的判断写入缓存，下次运行不再交给模型。
     for item in checked["no_draft"]:
-        repo = item["pr"].split("#")[0]
+        repo = ref_repo(item["pr"])
         state.setdefault("repos", {}).setdefault(repo, {}).setdefault("technical", []).append(item["pr"])
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 

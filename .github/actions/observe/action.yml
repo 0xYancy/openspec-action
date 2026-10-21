@@ -140,10 +140,10 @@ runs:
       run: |
         OUT="$RUNNER_TEMP/openspec-obs/out"
         {
-          [ -f "$OUT/report.md" ] && cat "$OUT/report.md" || echo "## 实现观察"$'\n\n'"本次没有新合并的待匹配 PR，未调用模型。"
+          [ -f "$OUT/report.md" ] && cat "$OUT/report.md" || echo "## 实现观察"$'\n\n'"本次没有待匹配的实现单元（已合并 PR 或直接推送的提交），未调用模型。"
           echo
           echo "### 仓库读取结果"
           echo "| 仓库 | 结果 | 说明 |"
           echo "|---|---|---|"
-          [ -f "$OUT/summary.json" ] && jq -r '.repos[] | "| \(.repo) | \(if .ok then "成功" else "跳过" end) | \(if .ok then "新合并 \(.new) / 打开中 \(.open)" else .error end) |"' "$OUT/summary.json"
+          [ -f "$OUT/summary.json" ] && jq -r '.repos[] | "| \(.repo) | \(if .ok then "成功" else "跳过" end) | \(if .ok then "待匹配 \(.new)（已合并 PR \(.merged)，直接推送批次 \(.direct // 0)）/ 打开中 PR \(.open)" else .error end) |"' "$OUT/summary.json"
         } >> "$GITHUB_STEP_SUMMARY"

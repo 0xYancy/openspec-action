@@ -9,7 +9,7 @@
   LOOKBACK_DAYS 没有位置记录时回看的天数，默认 14
 
 产出（--out 目录）：
-  input.json    模型输入：候选 change、待匹配的已合并 PR
+  input.json    模型输入：候选 change、待匹配的实现单元（已合并 PR 与直接推送的提交批次）
   signals.json  进行中信号：打开中的 PR 与其推断关联的 change
   summary.json  运行摘要：各仓库读取结果、被跳过的组织、待匹配数量
   state.json    新的位置记录（只前移读取成功的仓库）
@@ -43,6 +43,7 @@ TECH_FILE = re.compile(
     r"__tests__/|tests?/|.*\.(test|spec)\.[a-z]+$|\.gitignore$|\.editorconfig$)"
 )
 MAX_PATCH = 6000
+CST = dt.timezone(dt.timedelta(hours=8))
 
 
 def iso(value: dt.datetime) -> str:
@@ -126,6 +127,82 @@ def fetch_pulls(repo: str, branch: str, token: str, since: dt.datetime) -> tuple
     return merged, opened
 
 
+def fetch_pr_shas(repo: str, pulls: list[dict], token: str) -> set[str]:
+    """已合并 PR 的提交与合并提交：直接推送的提交要排除它们。"""
+    shas: set[str] = set()
+    for pr in pulls:
+        if pr.get("merge_commit_sha"):
+            shas.add(pr["merge_commit_sha"])
+        for page in range(1, 4):
+            items = gh_request(f"/repos/{repo}/pulls/{pr['number']}/commits?per_page=100&page={page}", token) or []
+            shas.update(c["sha"] for c in items)
+            if len(items) < 100:
+                break
+    return shas
+
+
+def fetch_commits(repo: str, branch: str, token: str, since: dt.datetime) -> list[dict]:
+    """观察分支上 since 之后的提交，按时间从旧到新。"""
+    commits = []
+    for page in range(1, 11):
+        items = gh_request(f"/repos/{repo}/commits?sha={branch}&since={iso(since)}&per_page=100&page={page}", token) or []
+        commits += items
+        if len(items) < 100:
+            break
+    return sorted(commits, key=lambda c: c["commit"]["committer"]["date"])
+
+
+def commit_batches(commits: list[dict], pr_shas: set[str]) -> list[list[dict]]:
+    """把同一天（北京时间）内连续的直接推送合成一个实现单元；PR 的提交会切断连续。"""
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    day = None
+    for commit in commits:
+        if commit["sha"] in pr_shas:
+            if current:
+                batches.append(current)
+            current, day = [], None
+            continue
+        commit_day = parse_time(commit["commit"]["committer"]["date"]).astimezone(CST).date()
+        if current and commit_day != day:
+            batches.append(current)
+            current = []
+        current.append(commit)
+        day = commit_day
+    if current:
+        batches.append(current)
+    return batches
+
+
+def batch_ref(repo: str, batch: list[dict]) -> str:
+    first, last = batch[0]["sha"][:7], batch[-1]["sha"][:7]
+    return f"{repo}@{first}" if first == last else f"{repo}@{first}..{last}"
+
+
+def batch_files(repo: str, batch: list[dict], token: str) -> tuple[list[dict], str]:
+    """区间的改动文件与链接：有父提交时用 compare，否则取单个提交。"""
+    first, last = batch[0], batch[-1]
+    parents = first.get("parents") or []
+    if parents:
+        data = gh_request(f"/repos/{repo}/compare/{parents[0]['sha']}...{last['sha']}", token) or {}
+        url = f"https://github.com/{repo}/compare/{parents[0]['sha'][:12]}...{last['sha'][:12]}"
+        return data.get("files") or [], url
+    data = gh_request(f"/repos/{repo}/commits/{last['sha']}", token) or {}
+    return data.get("files") or [], last["html_url"]
+
+
+def batch_technical(batch: list[dict], files: list[dict]) -> str | None:
+    authors = {((c.get("author") or {}).get("login") or c["commit"]["author"].get("name") or "") for c in batch}
+    if authors and all(BOT_AUTHORS.search(a) for a in authors):
+        return "机器人提交"
+    messages = [c["commit"]["message"].split("\n")[0] for c in batch if len(c.get("parents") or []) <= 1]
+    if messages and all(TECH_TITLE.match(m) for m in messages):
+        return "提交说明均为技术类前缀"
+    if files and all(TECH_FILE.search(f["filename"]) for f in files):
+        return "只改动依赖、测试或 CI 文件"
+    return None
+
+
 def fetch_files(repo: str, number: int, token: str) -> list[dict]:
     files = []
     for page in range(1, 4):
@@ -206,6 +283,7 @@ def main() -> int:
                 text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}\n{pr['head']['ref']}"
                 merged_items.append(
                     {
+                        "kind": "pr",
                         "pr": ref,
                         "url": pr["html_url"],
                         "title": pr.get("title") or "",
@@ -218,6 +296,37 @@ def main() -> int:
                     }
                 )
                 new_count += 1
+            # 不经 PR 直接推送到观察分支的提交
+            pr_shas = fetch_pr_shas(slug, merged, token)
+            direct = 0
+            for batch in commit_batches(fetch_commits(slug, repo["branch"], token, since), pr_shas):
+                ref = batch_ref(slug, batch)
+                if ref in handled or ref in (entry.get("technical") or []):
+                    continue
+                files, url = batch_files(slug, batch, token)
+                reason = batch_technical(batch, files)
+                if reason:
+                    entry.setdefault("technical", []).append(ref)
+                    continue
+                names, patch = summarize_files(files)
+                messages = "\n".join(f"- {c['sha'][:7]} {c['commit']['message'].strip()}" for c in batch)
+                title = batch[-1]["commit"]["message"].split("\n")[0]
+                merged_items.append(
+                    {
+                        "kind": "commits",
+                        "pr": ref,
+                        "url": url,
+                        "title": title + (f"（共 {len(batch)} 个提交）" if len(batch) > 1 else ""),
+                        "body": messages[:3000],
+                        "branch": repo["branch"],
+                        "merged_at": batch[-1]["commit"]["committer"]["date"],
+                        "files": names[:80],
+                        "patch": patch,
+                        "hints": hints_for(messages, candidates, args.store_repo),
+                    }
+                )
+                direct += 1
+            new_count += direct
             for pr in opened:
                 ref = pr_ref(slug, pr["number"])
                 text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}\n{pr['head']['ref']}"
@@ -234,7 +343,7 @@ def main() -> int:
             entry["since"] = iso(now)
             entry["technical"] = (entry.get("technical") or [])[-500:]
             state["repos"][slug] = entry
-            repo_results.append({"repo": slug, "ok": True, "merged": len(merged), "new": new_count, "open": len(opened)})
+            repo_results.append({"repo": slug, "ok": True, "merged": len(merged), "direct": direct, "new": new_count, "open": len(opened)})
         except GitHubError as error:
             repo_results.append({"repo": slug, "ok": False, "error": str(error)})
 

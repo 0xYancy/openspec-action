@@ -224,5 +224,39 @@ class ArchiveTest(unittest.TestCase):
             self.assertIn("能力甲：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
 
 
+class CommitBatchTest(unittest.TestCase):
+    """直接推送的提交：同一天内连续的直接推送合成一个实现单元，PR 的提交切断连续。"""
+
+    @staticmethod
+    def commit(sha: str, when: str, parents: int = 1, message: str = "feat: x") -> dict:
+        return {"sha": sha * 7, "commit": {"committer": {"date": when}, "author": {"name": "dev"}, "message": message},
+                "parents": [{"sha": "p"}] * parents, "author": {"login": "dev"}}
+
+    def test_batches(self) -> None:
+        c = self.commit
+        commits = [
+            c("a", "2026-10-20T02:00:00Z"), c("b", "2026-10-20T03:00:00Z"),
+            c("p", "2026-10-20T04:00:00Z"),            # 属于已合并 PR
+            c("d", "2026-10-20T05:00:00Z"),
+            c("e", "2026-10-20T17:00:00Z"),            # 北京时间已是次日
+        ]
+        batches = prepare.commit_batches(commits, {"p" * 7})
+        self.assertEqual([[x["sha"][0] for x in b] for b in batches], [["a", "b"], ["d"], ["e"]])
+        self.assertEqual(prepare.batch_ref("o/r", batches[0]), "o/r@aaaaaaa..bbbbbbb")
+        self.assertEqual(prepare.batch_ref("o/r", batches[1]), "o/r@ddddddd")
+
+    def test_technical(self) -> None:
+        c = self.commit
+        self.assertEqual(prepare.batch_technical([c("a", "2026-10-20T02:00:00Z", message="chore: bump")], []), "提交说明均为技术类前缀")
+        merge_only_tech = [c("a", "2026-10-20T02:00:00Z", parents=2, message="chore: merge feat/x"), c("b", "2026-10-20T03:00:00Z")]
+        self.assertIsNone(prepare.batch_technical(merge_only_tech, [{"filename": "src/app.ts"}]))
+
+    def test_ref_helpers(self) -> None:
+        self.assertEqual(write.ref_repo("o/r@abc1234..def5678"), "o/r")
+        self.assertEqual(write.ref_suffix("o/r@abc1234..def5678"), "def5678")
+        self.assertEqual(write.ref_repo("o/r#12"), "o/r")
+        self.assertEqual(write.ref_suffix("o/r#12"), "12")
+
+
 if __name__ == "__main__":
     unittest.main()
