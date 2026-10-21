@@ -56,7 +56,7 @@ TBD_PURPOSE = re.compile(r"^TBD - created by archiving change .*$", re.M)
 
 
 def fill_purposes(store: Path, proposal: str, capabilities: list[str]) -> list[str]:
-    """用 proposal「涉及规范」中的说明替换新能力的 TBD Purpose；返回仍需人工补写的能力。"""
+    """用 proposal「涉及规范」中的说明替换新能力的 TBD Purpose；返回仍需人工补写或扩写的能力。"""
     missing = []
     for capability in capabilities:
         spec = store / "openspec" / "specs" / capability / "spec.md"
@@ -66,9 +66,11 @@ def fill_purposes(store: Path, proposal: str, capabilities: list[str]) -> list[s
         if not TBD_PURPOSE.search(text):
             continue
         match = re.search(rf"\*\*(.+?)\*\*（标识 `{re.escape(capability)}`）[：:]\s*(.+)", proposal)
-        if match:
-            spec.write_text(TBD_PURPOSE.sub(f"{match.group(1)}：{match.group(2).strip()}", text, count=1), encoding="utf-8")
-        else:
+        purpose = f"{match.group(1)}：{match.group(2).strip()}" if match else ""
+        if purpose:
+            spec.write_text(TBD_PURPOSE.sub(purpose, text, count=1), encoding="utf-8")
+        # strict 校验要求 Purpose 至少 50 字符，proposal 的一句话说明常常不够
+        if len(purpose) < 50:
             missing.append(capability)
     return missing
 
@@ -140,7 +142,7 @@ def main() -> int:
 ## 主 specs 改动
 {spec_lines}
 
-{"**需要补写 Purpose**：" + "、".join(f"`openspec/specs/{c}/spec.md`" for c in missing_purpose) + " 是新能力，proposal 中没有它的说明，请在本 PR 中补写 Purpose，否则 Store 检查不通过。" + chr(10) if missing_purpose else ""}
+{"**需要补写 Purpose**：" + "、".join(f"`openspec/specs/{c}/spec.md`" for c in missing_purpose) + " 是新能力，proposal 中没有它的说明或说明不足 50 字，请在本 PR 中补写 Purpose，否则 Store 检查不通过。" + chr(10) if missing_purpose else ""}
 ## 关联的实现 PR
 {impl_lines or '未观察到关联的实现 PR（允许直接归档）。'}
 
