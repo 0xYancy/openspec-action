@@ -1,5 +1,5 @@
 name: 'OpenSpec Store Check'
-description: 'Store 的 PR 检查：openspec validate --strict、需求状态约束（主分支不允许草稿）、执行类字段、受保护文件'
+description: 'Store 的 PR 检查：openspec validate（改动部分 --strict）、需求状态约束（主分支不允许草稿）、执行类字段、受保护文件'
 author: '0xYancy'
 
 inputs:
@@ -30,11 +30,31 @@ runs:
       env:
         OPENSPEC_TELEMETRY: '0'
       run: |
-        if openspec validate --all --strict > "$RUNNER_TEMP/validate.txt" 2>&1; then
-          echo "### openspec validate --strict 通过" >> "$GITHUB_STEP_SUMMARY"
+        # 全部内容做普通校验；本次 PR 改动的规范与活动 change 另做 --strict 校验。
+        # 迁移进来的旧规范可能带有 strict 警告，只在被改动时才要求修正，不拦住无关的 PR。
+        BASE="${{ inputs.base-ref }}"
+        [ -z "$BASE" ] && BASE="origin/${{ github.base_ref || github.event.repository.default_branch }}"
+        OUT="$RUNNER_TEMP/validate.txt"
+        FAIL=0
+        openspec validate --all > "$OUT" 2>&1 || FAIL=1
+        CHANGED=$(git diff --name-only "$BASE"...HEAD)
+        SPECS=$(echo "$CHANGED" | sed -nE 's#^openspec/specs/([^/]+)/spec\.md$#\1#p' | sort -u)
+        CHANGES=$(echo "$CHANGED" | sed -nE 's#^openspec/changes/([^/]+)/.+#\1#p' | { grep -vx archive || true; } | sort -u)
+        for s in $SPECS; do
+          [ -f "openspec/specs/$s/spec.md" ] || continue
+          echo "--- strict: spec $s" >> "$OUT"
+          openspec validate "$s" --type spec --strict >> "$OUT" 2>&1 || FAIL=1
+        done
+        for c in $CHANGES; do
+          [ -d "openspec/changes/$c" ] || continue
+          echo "--- strict: change $c" >> "$OUT"
+          openspec validate "$c" --type change --strict >> "$OUT" 2>&1 || FAIL=1
+        done
+        if [ "$FAIL" = 0 ]; then
+          echo "### openspec validate 通过（全部普通校验；本次改动的规范与 change 为 --strict）" >> "$GITHUB_STEP_SUMMARY"
         else
-          { echo "### openspec validate --strict 未通过"; echo; echo '```'; tail -60 "$RUNNER_TEMP/validate.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          cat "$RUNNER_TEMP/validate.txt"
+          { echo "### openspec validate 未通过"; echo; echo '```'; tail -60 "$OUT"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$OUT"
           exit 1
         fi
 
