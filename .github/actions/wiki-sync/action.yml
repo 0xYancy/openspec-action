@@ -201,19 +201,7 @@ runs:
         if [ -z "$FAILED" ]; then echo "remaining=all" >> "$GITHUB_OUTPUT"; fi
         if [ -n "$FAILED" ]; then
           echo "以下页面撰写失败，移出本次草稿：$FAILED"
-          python3 - "$DRAFT" $FAILED <<'EOF'
-        import json, os, sys
-        from pathlib import Path
-        draft, failed = Path(sys.argv[1]), set(sys.argv[2:])
-        manifest = json.loads((draft / "manifest.json").read_text(encoding="utf-8"))
-        manifest["pages"] = [p for p in manifest["pages"] if p["id"] not in failed]
-        (draft / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        for page in failed:
-            (draft / "pages" / f"{page}.md").unlink(missing_ok=True)
-            (draft / "context" / f"{page}.json").unlink(missing_ok=True)
-        with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-            out.write(f"remaining={len(manifest['pages'])}\n")
-        EOF
+          echo "remaining=$(python3 "${{ github.action_path }}/drop_pages.py" "$DRAFT" $FAILED)" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Check gates and publish to branch
@@ -226,14 +214,27 @@ runs:
         W="${{ steps.facts.outputs.dir }}"
         RUN="${{ steps.status.outputs.run }}"
         cd "$W/hub/knowledge-hub"
-        npm run -s wiki -- check "$RUN" --wiki "$GITHUB_WORKSPACE/wiki" | tee "$W/check.txt"
+        DRAFT="$GITHUB_WORKSPACE/wiki/drafts/$RUN"
+        if ! npm run -s wiki -- check "$RUN" --wiki "$GITHUB_WORKSPACE/wiki" > "$W/check.txt"; then
+          cat "$W/check.txt"
+          # 校验不通过的页面移出草稿，其余页面照常发布
+          BAD=$(sed -n 's/^✗ \[\([^]]*\)\].*/\1/p' "$W/check.txt" | sort -u | tr '\n' ' ')
+          if [ -z "$BAD" ]; then exit 1; fi
+          echo "dropped=$(echo $BAD)" >> "$GITHUB_OUTPUT"
+          echo "以下页面未通过校验，移出本次草稿：$BAD"
+          if [ "$(python3 "${{ github.action_path }}/drop_pages.py" "$DRAFT" $BAD)" = 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          npm run -s wiki -- check "$RUN" --wiki "$GITHUB_WORKSPACE/wiki" > "$W/check.txt" || { cat "$W/check.txt"; exit 1; }
+        fi
+        cat "$W/check.txt"
         npm run -s wiki -- publish "$RUN" --wiki "$GITHUB_WORKSPACE/wiki" | tee "$W/publish.txt"
         cp "$GITHUB_WORKSPACE/wiki/drafts/$RUN/manifest.json" "$W/manifest.json" 2>/dev/null || true
         rm -rf "$GITHUB_WORKSPACE/wiki/drafts"
 
     - name: Open or update draft PR
       id: pr
-      if: steps.status.outputs.run != '' && steps.agent.outputs.remaining != '0'
+      if: steps.status.outputs.run != '' && steps.agent.outputs.remaining != '0' && steps.publish.outputs.skip != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.store-token }}
@@ -268,9 +269,10 @@ runs:
           echo "## 页面改动"
           echo "$PAGES" | sed 's/^/- /'
           echo
-          if [ -n "${{ steps.agent.outputs.failed }}" ]; then
+          if [ -n "${{ steps.agent.outputs.failed }}${{ steps.publish.outputs.dropped }}" ]; then
             echo "## 本次未写成的页面"
-            echo "${{ steps.agent.outputs.failed }}" | tr ' ' '\n' | sed 's/^/- /'
+            for P in ${{ steps.agent.outputs.failed }}; do echo "- $P（撰写未完成）"; done
+            for P in ${{ steps.publish.outputs.dropped }}; do echo "- $P（未通过校验，原因见下方校验结果）"; done
             echo
             echo "这些页面不在本 PR 中，仍处于待更新状态。合并本 PR 后会自动重新整理它们；也可以在 Actions → Store · 产品 wiki 中手动运行重试。"
             echo
@@ -318,10 +320,10 @@ runs:
         gh pr edit "${{ steps.pr.outputs.url }}" --body-file "$W/body.md"
 
     - name: Report pages not written
-      if: steps.agent.outputs.failed != ''
+      if: steps.agent.outputs.failed != '' || steps.publish.outputs.dropped != ''
       shell: bash
       run: |
-        echo "::error::以下页面本次未写成，已移出草稿，下次运行重试：${{ steps.agent.outputs.failed }}"
+        echo "::error::以下页面本次未写成，已移出草稿，下次运行重试：${{ steps.agent.outputs.failed }} ${{ steps.publish.outputs.dropped }}"
         exit 1
 
     - name: Summary
