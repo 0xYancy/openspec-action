@@ -23,9 +23,13 @@ inputs:
     description: '单个读取 token（例如维护者的 classic PAT，需 repo 范围），用于所有组织'
     required: false
     default: ''
-  anthropic-api-key:
-    description: 'Agent 使用的 Anthropic API key'
+  deepseek-api-key:
+    description: 'Agent 使用的 DeepSeek API key（经 DeepSeek 的 Anthropic 兼容接口运行 Claude Code）'
     required: true
+  model:
+    description: 'DeepSeek 模型（可选，默认 deepseek-v4-flash）'
+    required: false
+    default: 'deepseek-v4-flash'
   hub-repo:
     description: '知识中心所在仓库'
     required: false
@@ -141,8 +145,17 @@ runs:
     - name: Agent writes draft pages
       if: steps.status.outputs.run != ''
       uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+        ANTHROPIC_AUTH_TOKEN: ${{ inputs.deepseek-api-key }}
+        ANTHROPIC_MODEL: ${{ inputs.model }}
+        ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.model }}
+        ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.model }}
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
+        ANTHROPIC_SMALL_FAST_MODEL: ${{ inputs.model }}
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
       with:
-        anthropic_api_key: ${{ inputs.anthropic-api-key }}
+        anthropic_api_key: ${{ inputs.deepseek-api-key }}
         prompt: |
           你在为产品 wiki 撰写草稿页面。草稿目录：${{ github.workspace }}/wiki/drafts/${{ steps.status.outputs.run }}。
           先完整阅读 ${{ steps.facts.outputs.dir }}/hub/knowledge-hub/wiki/README.md，
@@ -153,6 +166,7 @@ runs:
         claude_args: |
           --allowedTools Read,Edit,Write
           --max-turns 80
+          --model ${{ inputs.model }}
 
     - name: Check gates and publish to branch
       id: publish

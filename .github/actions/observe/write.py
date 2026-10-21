@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""实现观察的受限写入步骤：校验 Agent 结论，只在 Store 开或更新草稿 PR。
+"""实现观察的受限写入步骤：校验 模型结论，只在 Store 开或更新草稿 PR。
 
 用法：python3 write.py --store <dir> --store-repo <owner/repo> --base <主分支> --input <input.json>
                        --result <result.json> --state <state.json> --report <report.md> [--dry-run]
@@ -41,7 +41,7 @@ def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
     for link in result.get("links") or []:
         name = link.get("change")
         if name not in changes:
-            notes.append(f"忽略：Agent 关联了不存在或不可关联的 change `{name}`")
+            notes.append(f"忽略：模型关联了不存在或不可关联的 change `{name}`")
             continue
         for pr in link.get("prs") or []:
             ref = pr.get("pr")
@@ -72,7 +72,7 @@ def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
             no_draft.append(item)
     for ref in merged:
         if ref not in seen:
-            notes.append(f"{ref} 未被 Agent 归类，下次运行重新判断")
+            notes.append(f"{ref} 未被模型归类，下次运行重新判断")
     return {"links": list(links.values()), "unregistered": unregistered, "no_draft": no_draft}, notes
 
 
@@ -225,7 +225,7 @@ def main() -> int:
     checked, notes = validate(result, data)
     changes = {c["change"]: c for c in data["changes"]}
 
-    # 无需起草的判断写入缓存，下次运行不再交给 Agent。
+    # 无需起草的判断写入缓存，下次运行不再交给模型。
     for item in checked["no_draft"]:
         repo = item["pr"].split("#")[0]
         state.setdefault("repos", {}).setdefault(repo, {}).setdefault("technical", []).append(item["pr"])

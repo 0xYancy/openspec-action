@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""实现观察的确定性前置步骤：收集事实，生成 Agent 输入。
+"""实现观察的确定性前置步骤：收集事实，生成模型输入。
 
 用法：python3 prepare.py --store <dir> --store-repo <owner/repo> --state <state.json> --out <dir>
 
@@ -9,7 +9,7 @@
   LOOKBACK_DAYS 没有位置记录时回看的天数，默认 14
 
 产出（--out 目录）：
-  input.json    Agent 输入：候选 change、待匹配的已合并 PR
+  input.json    模型输入：候选 change、待匹配的已合并 PR
   signals.json  进行中信号：打开中的 PR 与其推断关联的 change
   summary.json  运行摘要：各仓库读取结果、被跳过的组织、待匹配数量
   state.json    新的位置记录（只前移读取成功的仓库）

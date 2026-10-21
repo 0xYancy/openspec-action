@@ -1,5 +1,5 @@
 name: 'OpenSpec Store Observe'
-description: '只读观察 Store 登记的实现仓：新合并的 PR 交给 Agent 匹配需求，结果以草稿 PR 写入 Store；打开中的 PR 作为进行中信号'
+description: '只读观察 Store 登记的实现仓：新合并的 PR 交给 DeepSeek 匹配需求，结果以草稿 PR 写入 Store；打开中的 PR 作为进行中信号'
 author: '0xYancy'
 
 inputs:
@@ -23,11 +23,11 @@ inputs:
     description: '单个读取 token（例如维护者的 classic PAT，需 repo 范围），用于所有组织'
     required: false
     default: ''
-  anthropic-api-key:
-    description: 'Agent 使用的 Anthropic API key'
+  deepseek-api-key:
+    description: '匹配使用的 DeepSeek API key'
     required: true
   model:
-    description: 'Agent 模型（可选）'
+    description: 'DeepSeek 模型（可选，默认 deepseek-v4-flash）'
     required: false
     default: ''
   dry-run:
@@ -41,7 +41,7 @@ inputs:
 
 outputs:
   to-match:
-    description: '本次交给 Agent 匹配的 PR 数量'
+    description: '本次交给模型匹配的 PR 数量'
     value: ${{ steps.prepare.outputs.to-match }}
 
 runs:
@@ -93,34 +93,24 @@ runs:
           --out "$RUNNER_TEMP/openspec-obs/out")
         echo "$RESULT"
         echo "to-match=$(echo "$RESULT" | jq -r '.to_match')" >> "$GITHUB_OUTPUT"
-        {
-          echo "prompt<<PROMPT_EOF"
-          sed "s#{{INPUT}}#$RUNNER_TEMP/openspec-obs/out/input.json#" "${{ github.action_path }}/prompt.md"
-          echo "PROMPT_EOF"
-          echo "schema=$(jq -c . "${{ github.action_path }}/schema.json")"
-        } >> "$GITHUB_OUTPUT"
 
-    - name: Agent drafts conclusions
-      id: agent
+    - name: Match with DeepSeek
       if: steps.prepare.outputs.to-match != '0'
-      uses: anthropics/claude-code-action@v1
-      with:
-        anthropic_api_key: ${{ inputs.anthropic-api-key }}
-        prompt: ${{ steps.prepare.outputs.prompt }}
-        claude_args: |
-          --allowedTools Read
-          --max-turns 30
-          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-          --json-schema '${{ steps.prepare.outputs.schema }}'
+      shell: bash
+      env:
+        DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
+        DEEPSEEK_MODEL: ${{ inputs.model }}
+      run: |
+        python3 "${{ github.action_path }}/llm.py" \
+          --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
+          --out "$RUNNER_TEMP/openspec-obs/out/result.json"
 
     - name: Write draft PRs
       if: steps.prepare.outputs.to-match != '0'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.store-token }}
-        AGENT_RESULT: ${{ steps.agent.outputs.structured_output }}
       run: |
-        printf '%s' "$AGENT_RESULT" > "$RUNNER_TEMP/openspec-obs/out/result.json"
         DRY=""; [ "${{ inputs.dry-run }}" = "true" ] && DRY="--dry-run"
         python3 "${{ github.action_path }}/write.py" \
           --store . --store-repo "${{ github.repository }}" \
@@ -150,7 +140,7 @@ runs:
       run: |
         OUT="$RUNNER_TEMP/openspec-obs/out"
         {
-          [ -f "$OUT/report.md" ] && cat "$OUT/report.md" || echo "## 实现观察"$'\n\n'"本次没有新合并的待匹配 PR，未调用 Agent。"
+          [ -f "$OUT/report.md" ] && cat "$OUT/report.md" || echo "## 实现观察"$'\n\n'"本次没有新合并的待匹配 PR，未调用模型。"
           echo
           echo "### 仓库读取结果"
           echo "| 仓库 | 结果 | 说明 |"

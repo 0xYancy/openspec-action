@@ -116,7 +116,7 @@ class ValidateAgentResultTest(unittest.TestCase):
         self.assertEqual(len(result["links"]), 1)
         self.assertEqual(result["unregistered"], [])
         self.assertEqual([n["pr"] for n in result["no_draft"]], ["o/dapp#3"])
-        self.assertTrue(any("o/dapp#2 未被 Agent 归类" in note for note in notes))
+        self.assertTrue(any("o/dapp#2 未被模型归类" in note for note in notes))
 
     def test_diffs_only_for_kept_prs(self) -> None:
         link = self.link("tvl", "o/dapp#1")
