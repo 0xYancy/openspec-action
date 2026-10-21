@@ -38,6 +38,10 @@ inputs:
     description: '知识中心工具的版本（分支或提交）'
     required: false
     default: 'main'
+  claude-code-version:
+    description: 'Claude Code CLI 版本'
+    required: false
+    default: '2.1.301'
   rebuild:
     description: '空格分隔的页面 id：基于全部来源重写这些页面'
     required: false
@@ -144,7 +148,8 @@ runs:
 
     - name: Agent writes draft pages
       if: steps.status.outputs.run != ''
-      uses: anthropics/claude-code-action@v1
+      shell: bash
+      # 直接运行 Claude Code CLI：claude-code-action 不支持 push 事件，而本 workflow 由 push 触发。
       env:
         ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
         ANTHROPIC_AUTH_TOKEN: ${{ inputs.deepseek-api-key }}
@@ -154,19 +159,20 @@ runs:
         ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
         ANTHROPIC_SMALL_FAST_MODEL: ${{ inputs.model }}
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
-      with:
-        anthropic_api_key: ${{ inputs.deepseek-api-key }}
-        prompt: |
-          你在为产品 wiki 撰写草稿页面。草稿目录：${{ github.workspace }}/wiki/drafts/${{ steps.status.outputs.run }}。
-          先完整阅读 ${{ steps.facts.outputs.dir }}/hub/knowledge-hub/wiki/README.md，
-          再按 ${{ steps.facts.outputs.dir }}/hub/.claude/skills/opsx-manage-wiki-sync/SKILL.md 的第 3 步（概览页）与第 4 步（迭代记录页）撰写：
-          逐个读取草稿目录下 context/<页面 id>.json，改写 pages/<页面 id>.md。
-          只允许修改该草稿目录下 pages/ 中的文件，不得修改其他任何文件，不得运行命令。
-          不得写出处原文中没有的规则、数字或条件。
-        claude_args: |
-          --allowedTools Read,Edit,Write
-          --max-turns 80
-          --model ${{ inputs.model }}
+        DISABLE_AUTOUPDATER: '1'
+      run: |
+        W="${{ steps.facts.outputs.dir }}"
+        DRAFT="$GITHUB_WORKSPACE/wiki/drafts/${{ steps.status.outputs.run }}"
+        npm install -g "@anthropic-ai/claude-code@${{ inputs.claude-code-version }}" >/dev/null
+        PROMPT="你在为产品 wiki 撰写草稿页面。草稿目录：$DRAFT。
+        先完整阅读 $W/hub/knowledge-hub/wiki/README.md，
+        再按 $W/hub/.claude/skills/opsx-manage-wiki-sync/SKILL.md 的第 3 步（概览页）与第 4 步（迭代记录页）撰写：
+        逐个读取草稿目录下 context/<页面 id>.json，改写 pages/<页面 id>.md。
+        只允许修改该草稿目录下 pages/ 中的文件，不得修改其他任何文件，不得运行命令。
+        不得写出处原文中没有的规则、数字或条件。"
+        cd "$GITHUB_WORKSPACE"
+        claude -p "$PROMPT" --add-dir "$W/hub" --allowedTools Read,Edit,Write \
+          --max-turns 80 --model "${{ inputs.model }}" --output-format text
 
     - name: Check gates and publish to branch
       id: publish
@@ -269,7 +275,7 @@ runs:
         W="${{ steps.facts.outputs.dir }}"
         {
           echo "## 产品 wiki 整理"
-          [ -n "${{ steps.pr.outputs.url }}" ] && echo "草稿 PR：${{ steps.pr.outputs.url }}"
-          [ -f "$W/check.txt" ] && { echo '```'; cat "$W/check.txt"; echo '```'; }
-          [ -f "$W/publish.txt" ] && { echo '```'; cat "$W/publish.txt"; echo '```'; }
+          if [ -n "${{ steps.pr.outputs.url }}" ]; then echo "草稿 PR：${{ steps.pr.outputs.url }}"; fi
+          if [ -f "$W/check.txt" ]; then echo '```'; cat "$W/check.txt"; echo '```'; fi
+          if [ -f "$W/publish.txt" ]; then echo '```'; cat "$W/publish.txt"; echo '```'; fi
         } >> "$GITHUB_STEP_SUMMARY"
