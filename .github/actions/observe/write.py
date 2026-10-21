@@ -135,7 +135,8 @@ def commit_and_push(store: Path, branch: str, message: str) -> list[str]:
         return denied
     run(store, "git", "add", "--", *allowed)
     run(store, "git", "commit", "-m", message)
-    run(store, "git", "push", "origin", f"HEAD:refs/heads/{branch}")
+    # obs/* 分支只由自动化写入；上次开 PR 失败时残留的同名分支直接覆盖
+    run(store, "git", "push", "--force", "origin", f"HEAD:refs/heads/{branch}")
     return denied
 
 
