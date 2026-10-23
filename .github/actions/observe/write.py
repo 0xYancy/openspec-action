@@ -32,12 +32,17 @@ def run(store: Path, *args: str, check: bool = True, input_text: str | None = No
 
 
 def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
-    """丢弃引用不存在的 PR / change、被拒绝过的组合，以及重复出现的 PR。"""
+    """丢弃引用不存在的 PR / change、被拒绝过的组合，以及重复出现的 PR。
+
+    一个实现单元可以关联多个 change（直接推送的提交批次常同时实现几个需求），但同一组合只保留一次；
+    已关联的单元不再出现在 unregistered / no_draft 中。
+    """
     notes: list[str] = []
     merged = {item["pr"]: item for item in data["merged"]}
     changes = {item["change"]: item for item in data["changes"]}
     rejected = {(r["pr"], r.get("change")) for r in data.get("rejected") or []}
     seen: set[str] = set()
+    paired: set[tuple[str, str]] = set()
     links: dict[str, dict] = {}
     for link in result.get("links") or []:
         name = link.get("change")
@@ -50,10 +55,11 @@ def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
                 notes.append(f"忽略：{ref} 不在本次待匹配的 PR 中")
             elif (ref, name) in rejected:
                 notes.append(f"忽略：{ref} 与 `{name}` 的关联已被需求侧拒绝")
-            elif ref in seen:
-                notes.append(f"忽略：{ref} 被重复归类")
+            elif (ref, name) in paired:
+                notes.append(f"忽略：{ref} 与 `{name}` 的关联重复")
             else:
                 seen.add(ref)
+                paired.add((ref, name))
                 links.setdefault(name, {"change": name, "prs": [], "diffs": []})["prs"].append({**pr, **{k: merged[ref][k] for k in ("url", "title", "merged_at")}})
         target = links.get(name)
         if target:

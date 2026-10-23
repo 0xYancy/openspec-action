@@ -10,7 +10,7 @@
 
 判断规则：
 
-1. 每个 PR 只能出现在 `links`、`unregistered`、`no_draft` 三者之一中。
+1. 每个 PR 只能归入 `links`、`unregistered`、`no_draft` 三类之一。归入 `links` 时可以关联多个 change：一个 PR（尤其是直接推送的提交批次）同时实现了几个 change 的需求时，在每个相关 change 下都列出它，各自写明对应的依据。
 2. **links**：PR 实现了某个 change 的需求时，归入该 change。
    - PR 所在仓库应在该 change 的 `repositories` 中；不在时只有提示信号明确指向该 change 才能关联。
    - `hint` 为 true 表示依据来自 `hints`；否则写明按内容推断的依据，具体到需求场景或改动的文件、函数。

@@ -120,6 +120,17 @@ class ValidateAgentResultTest(unittest.TestCase):
         self.assertEqual([n["pr"] for n in result["no_draft"]], ["o/dapp#3"])
         self.assertTrue(any("o/dapp#2 未被模型归类" in note for note in notes))
 
+    def test_pr_can_link_to_several_changes(self) -> None:
+        result, notes = write.validate(
+            {"links": [self.link("tvl", "o/dapp#1"), self.link("early-redeem", "o/dapp#1"), self.link("tvl", "o/dapp#1")],
+             "unregistered": [], "no_draft": [{"pr": "o/dapp#1", "reason": "x"}]},
+            self.DATA,
+        )
+        self.assertEqual(sorted(l["change"] for l in result["links"]), ["early-redeem", "tvl"])
+        self.assertEqual([len(l["prs"]) for l in result["links"]], [1, 1])
+        self.assertEqual(result["no_draft"], [])
+        self.assertTrue(any("关联重复" in note for note in notes))
+
     def test_new_change_id_is_unique(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp)
