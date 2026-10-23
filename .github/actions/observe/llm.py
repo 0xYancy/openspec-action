@@ -101,10 +101,13 @@ def unit_repo(unit: dict) -> str:
 
 
 def relevant_changes(changes: list[dict], units: list[dict]) -> list[dict]:
-    """涉及本批仓库、被本批提示信号指向，或没有登记涉及仓库的 change。"""
+    """涉及本批仓库、被本批提示信号指向，或没有登记涉及仓库的活动 change（已归档且未登记仓库的只在被提示时带上）。"""
     repos = {unit_repo(unit) for unit in units}
     hinted = {hint.get("change") for unit in units for hint in unit.get("hints") or []}
-    return [c for c in changes if not c.get("repositories") or repos & set(c["repositories"]) or c.get("change") in hinted]
+    return [
+        c for c in changes
+        if repos & set(c.get("repositories") or []) or c.get("change") in hinted or (not c.get("repositories") and not c.get("archived"))
+    ]
 
 
 def merge_results(results: list[dict]) -> dict:

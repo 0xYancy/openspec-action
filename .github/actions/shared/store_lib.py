@@ -48,9 +48,15 @@ def load_changes(store: Path, include_archive: bool = True) -> list[dict]:
     dirs = [d for d in sorted(root.iterdir()) if d.is_dir() and d.name != "archive"] if root.is_dir() else []
     if include_archive and (root / "archive").is_dir():
         dirs += [d for d in sorted((root / "archive").iterdir()) if d.is_dir()]
+    # 迁移前的 change 用单值 `repository`（实现仓的登记标识或仓库名），按 repos.yaml 换成 owner/repo。
+    registered = {key: repo["slug"] for repo in load_repos(store) for key in (str(repo.get("id") or ""), repo["slug"].split("/")[-1])}
     changes = []
     for directory in dirs:
         meta = load_yaml(directory / ".openspec.yaml")
+        repositories = [str(r) for r in meta.get("repositories") or []]
+        legacy = str(meta.get("repository") or "")
+        if not repositories and legacy:
+            repositories = [legacy if "/" in legacy else registered.get(legacy, legacy)]
         changes.append(
             {
                 "name": directory.name,
@@ -58,7 +64,7 @@ def load_changes(store: Path, include_archive: bool = True) -> list[dict]:
                 "archived": directory.parent.name == "archive",
                 "meta": meta,
                 "status": str(meta.get("status") or ""),
-                "repositories": [str(r) for r in meta.get("repositories") or []],
+                "repositories": repositories,
                 "implementations": meta.get("implementations") or [],
             }
         )

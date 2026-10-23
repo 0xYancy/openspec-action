@@ -182,7 +182,8 @@ class LlmBatchTest(unittest.TestCase):
 
     def test_relevant_changes(self) -> None:
         changes = [{"change": "a", "repositories": ["o/vault"]}, {"change": "b", "repositories": ["o/dapp"]},
-                   {"change": "c", "repositories": []}, {"change": "d", "repositories": ["o/dapp"]}]
+                   {"change": "c", "repositories": []}, {"change": "d", "repositories": ["o/dapp"]},
+                   {"change": "e", "repositories": [], "archived": True}]
         units = [{"pr": "o/vault@1..2", "hints": []}, {"pr": "o/svc#3", "hints": [{"change": "d"}]}]
         self.assertEqual([c["change"] for c in llm.relevant_changes(changes, units)], ["a", "c", "d"])
 
