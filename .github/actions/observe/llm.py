@@ -44,7 +44,14 @@ def call(messages: list[dict], key: str, model: str) -> str:
         ENDPOINT, data=body, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     )
     with urllib.request.urlopen(request, timeout=300) as response:
-        return json.loads(response.read())["choices"][0]["message"]["content"]
+        data = json.loads(response.read())
+    choice = data["choices"][0]
+    content = choice["message"].get("content") or ""
+    if not content.strip():
+        usage = data.get("usage") or {}
+        raise ValueError(f"返回内容为空（finish_reason={choice.get('finish_reason')}，"
+                         f"prompt_tokens={usage.get('prompt_tokens')}，completion_tokens={usage.get('completion_tokens')}）")
+    return content
 
 
 def main() -> int:
@@ -69,8 +76,7 @@ def main() -> int:
     print(f"候选 change {len(data.get('changes') or [])} 个（{changes_chars} 字符），实现单元 {len(data.get('merged') or [])} 个，分 {len(batches)} 批匹配")
     results = []
     for index, units in enumerate(batches, 1):
-        changes = relevant_changes(data.get("changes") or [], units)
-        result = match(system, {**data, "changes": changes, "merged": units}, key, model, f"第 {index}/{len(batches)} 批（候选 {len(changes)} 个）")
+        result = match_units(system, data, units, key, model, f"第 {index}/{len(batches)} 批")
         if result is None:
             return 1
         results.append(result)
@@ -137,6 +143,17 @@ def settle_archived(result: dict, archived: set[str]) -> dict:
     return result
 
 
+def match_units(system: str, data: dict, units: list[dict], key: str, model: str, label: str) -> dict | None:
+    """匹配一批实现单元；失败时把这批拆成两半分别重试，直到只剩一个单元。"""
+    changes = relevant_changes(data.get("changes") or [], units)
+    result = match(system, {**data, "changes": changes, "merged": units}, key, model, f"{label}（单元 {len(units)} 个，候选 {len(changes)} 个）")
+    if result is not None or len(units) <= 1:
+        return result
+    half = len(units) // 2
+    parts = [match_units(system, data, part, key, model, f"{label}-{i}") for i, part in enumerate((units[:half], units[half:]), 1)]
+    return None if None in parts else merge_results(parts)
+
+
 def match(system: str, data: dict, key: str, model: str, label: str) -> dict | None:
     messages = [
         {"role": "system", "content": system},
@@ -149,7 +166,7 @@ def match(system: str, data: dict, key: str, model: str, label: str) -> dict | N
             if isinstance(result, dict):
                 return result
             last_error = "返回的不是 JSON 对象"
-        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as error:
+        except (urllib.error.URLError, KeyError, IndexError, ValueError, TimeoutError) as error:
             last_error = str(error)
         print(f"{label}第 {attempt + 1} 次调用失败：{last_error}", file=sys.stderr)
         time.sleep(5 * (attempt + 1))
