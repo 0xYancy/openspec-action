@@ -232,6 +232,14 @@ def summarize_files(files: list[dict]) -> tuple[list[str], str]:
     return names, "\n".join(patch)
 
 
+def archived_on(name: str) -> dt.date:
+    """归档目录名的日期前缀（YYYY-MM-DD-<change>）；没有日期时视为很早以前归档。"""
+    try:
+        return dt.date.fromisoformat(name[:10])
+    except ValueError:
+        return dt.date.min
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--store", required=True)
@@ -255,6 +263,8 @@ def main() -> int:
     repos = load_repos(store)
     changes = load_changes(store)
     candidates = [c for c in changes if not c["archived"] and c["status"] in CANDIDATE_STATUS]
+    # 回看期内归档的 change 也作为候选：开发侧在归档前后合入的实现会匹配到它们，归入无需起草而不是误报为未登记。
+    candidates += [c for c in changes if c["archived"] and archived_on(c["name"]) >= lookback.date()]
 
     store_token = os.environ.get("STORE_TOKEN", "")
     obs_prs = list_store_obs_prs(args.store_repo, store_token) if store_token else []
@@ -366,8 +376,9 @@ def main() -> int:
                 "change": change["name"],
                 "title": change["meta"].get("title"),
                 "id": change["meta"].get("ID"),
-                "status": change["status"],
+                "status": "已归档" if change["archived"] else change["status"],
                 "repositories": change["repositories"],
+                **({"archived": True} if change["archived"] else {}),
                 **({"draft_pr": change["draft_pr"]} if change.get("draft_pr") else {}),
                 **change_text(store, change),
             }

@@ -30,6 +30,7 @@ def load(name: str, path: Path):
 
 write = load("observe_write", ACTIONS / "observe" / "write.py")
 prepare = load("observe_prepare", ACTIONS / "observe" / "prepare.py")
+llm = load("observe_llm", ACTIONS / "observe" / "llm.py")
 archive = load("store_archive", ACTIONS / "archive" / "archive.py")
 CHECK = ACTIONS / "store-check" / "check.py"
 
@@ -160,6 +161,28 @@ class PrefilterTest(unittest.TestCase):
         hints = prepare.hints_for("实现 D-42，见 20261021-aa01", changes, "o/spec")
         self.assertEqual([h["change"] for h in hints], ["early-redeem"])
         self.assertEqual(prepare.hints_for("feat: something", changes, "o/spec"), [])
+
+
+class LlmBatchTest(unittest.TestCase):
+    def test_split_units_by_count_and_size(self) -> None:
+        units = [{"id": i, "body": "x" * 15000} for i in range(10)]
+        self.assertEqual([len(b) for b in llm.split_units(units)], [3, 3, 3, 1])
+        self.assertEqual(llm.split_units([]), [[]])
+
+    def test_merge_and_settle_archived(self) -> None:
+        merged = llm.merge_results([
+            {"links": [{"change": "a", "prs": [{"pr": "p1", "basis": "x"}], "diffs": []}], "unregistered": [], "no_draft": []},
+            {"links": [{"change": "a", "prs": [{"pr": "p2", "basis": "y"}], "diffs": [{"scenario": "s"}]},
+                       {"change": "2026-10-15-old", "prs": [{"pr": "p3", "basis": "z"}], "diffs": []}],
+             "unregistered": [{"pr": "p4"}], "no_draft": []},
+        ])
+        result = llm.settle_archived(merged, {"2026-10-15-old"})
+        self.assertEqual([(l["change"], [p["pr"] for p in l["prs"]]) for l in result["links"]], [("a", ["p1", "p2"])])
+        self.assertEqual(result["no_draft"], [{"pr": "p3", "reason": "已归档 change `2026-10-15-old` 已覆盖：z"}])
+
+    def test_archived_on(self) -> None:
+        self.assertEqual(str(prepare.archived_on("2026-10-15-brand")), "2026-10-15")
+        self.assertEqual(prepare.archived_on("no-date"), prepare.dt.date.min)
 
 
 class DedupeTest(unittest.TestCase):

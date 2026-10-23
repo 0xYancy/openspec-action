@@ -72,7 +72,7 @@ def main() -> int:
         if result is None:
             return 1
         results.append(result)
-    merged = merge_results(results)
+    merged = settle_archived(merge_results(results), {c.get("change") for c in data.get("changes") or [] if c.get("archived")})
     Path(args.out).write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✓ {model} 返回结论：links {len(merged['links'])}，"
           f"unregistered {len(merged['unregistered'])}，no_draft {len(merged['no_draft'])}")
@@ -105,6 +105,19 @@ def merge_results(results: list[dict]) -> dict:
         merged["no_draft"] += result.get("no_draft") or []
     merged["links"] = list(links.values())
     return merged
+
+
+def settle_archived(result: dict, archived: set[str]) -> dict:
+    """关联到已归档 change 的实现单元归入 no_draft：需求已经归档，不再起草关联 PR。"""
+    links = []
+    for link in result["links"]:
+        if link.get("change") not in archived:
+            links.append(link)
+            continue
+        for pr in link.get("prs") or []:
+            result["no_draft"].append({"pr": pr.get("pr"), "reason": f"已归档 change `{link['change']}` 已覆盖：{pr.get('basis', '')}"})
+    result["links"] = links
+    return result
 
 
 def match(system: str, data: dict, key: str, model: str, label: str) -> dict | None:
