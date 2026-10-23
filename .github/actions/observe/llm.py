@@ -9,7 +9,8 @@
 
 结论的合法性（PR 是否在输入中、change 是否存在、是否命中被拒组合）由 write.py 校验，这里只保证输出是 JSON 对象。
 
-实现单元较多时分批调用（每批带全部候选 change），避免单次输出超出 max_tokens 被截断；各批结论按 change 合并。
+实现单元较多时分批调用，避免单次输出超出 max_tokens 被截断；每批只带与本批仓库相关或被提示信号指向的候选 change，
+避免输入超出上下文。各批结论按 change 合并。
 """
 from __future__ import annotations
 
@@ -68,7 +69,8 @@ def main() -> int:
     print(f"候选 change {len(data.get('changes') or [])} 个（{changes_chars} 字符），实现单元 {len(data.get('merged') or [])} 个，分 {len(batches)} 批匹配")
     results = []
     for index, units in enumerate(batches, 1):
-        result = match(system, {**data, "merged": units}, key, model, f"第 {index}/{len(batches)} 批")
+        changes = relevant_changes(data.get("changes") or [], units)
+        result = match(system, {**data, "changes": changes, "merged": units}, key, model, f"第 {index}/{len(batches)} 批（候选 {len(changes)} 个）")
         if result is None:
             return 1
         results.append(result)
@@ -91,6 +93,18 @@ def split_units(units: list[dict]) -> list[list[dict]]:
         batches[-1].append(unit)
         size += length
     return batches
+
+
+def unit_repo(unit: dict) -> str:
+    """实现单元标识形如 owner/repo#12 或 owner/repo@abc..def。"""
+    return unit.get("pr", "").split("#")[0].split("@")[0]
+
+
+def relevant_changes(changes: list[dict], units: list[dict]) -> list[dict]:
+    """涉及本批仓库、被本批提示信号指向，或没有登记涉及仓库的 change。"""
+    repos = {unit_repo(unit) for unit in units}
+    hinted = {hint.get("change") for unit in units for hint in unit.get("hints") or []}
+    return [c for c in changes if not c.get("repositories") or repos & set(c["repositories"]) or c.get("change") in hinted]
 
 
 def merge_results(results: list[dict]) -> dict:

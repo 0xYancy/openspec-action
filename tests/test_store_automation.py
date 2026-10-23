@@ -180,6 +180,12 @@ class LlmBatchTest(unittest.TestCase):
         self.assertEqual([(l["change"], [p["pr"] for p in l["prs"]]) for l in result["links"]], [("a", ["p1", "p2"])])
         self.assertEqual(result["no_draft"], [{"pr": "p3", "reason": "已归档 change `2026-10-15-old` 已覆盖：z"}])
 
+    def test_relevant_changes(self) -> None:
+        changes = [{"change": "a", "repositories": ["o/vault"]}, {"change": "b", "repositories": ["o/dapp"]},
+                   {"change": "c", "repositories": []}, {"change": "d", "repositories": ["o/dapp"]}]
+        units = [{"pr": "o/vault@1..2", "hints": []}, {"pr": "o/svc#3", "hints": [{"change": "d"}]}]
+        self.assertEqual([c["change"] for c in llm.relevant_changes(changes, units)], ["a", "c", "d"])
+
     def test_archived_on(self) -> None:
         self.assertEqual(str(prepare.archived_on("2026-10-15-brand")), "2026-10-15")
         self.assertEqual(prepare.archived_on("no-date"), prepare.dt.date.min)
