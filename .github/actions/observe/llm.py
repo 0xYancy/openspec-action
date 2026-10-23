@@ -37,13 +37,14 @@ def call(messages: list[dict], key: str, model: str) -> str:
             "messages": messages,
             "response_format": {"type": "json_object"},
             "temperature": 0,
-            "max_tokens": 8192,
+            # 模型默认先推理，推理 token 也计入 max_tokens；8192 时长输入会把额度用完、正文为空。
+            "max_tokens": 65536,
         }
     ).encode()
     request = urllib.request.Request(
         ENDPOINT, data=body, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(request, timeout=300) as response:
+    with urllib.request.urlopen(request, timeout=600) as response:
         data = json.loads(response.read())
     choice = data["choices"][0]
     content = choice["message"].get("content") or ""
