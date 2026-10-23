@@ -293,6 +293,18 @@ class ArchiveTest(unittest.TestCase):
             write_file(root, "wiki/structure.yaml", "pages:\n  - id: p\n    capabilities:\n      - o/s/cap-a\n      - o/s/cap-ab\n")
             self.assertEqual(archive.wiki_uncovered(root, "o/s", ["cap-a", "cap-b", "cap"]), ["cap-b", "cap"])
 
+    def test_changelog_merges_uppercase_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_file(root, "openspec/specs/cap-a/CHANGELOG.md", "# cap-a 变更记录\n\n## v1\n- 旧条目\n")
+            archive.append_changelog(root, "cap-a", {"created": "2026-10-23", "ID": "x", "title": "T"}, "c", ["- [修改] 需求：R"])
+            names = sorted(p.name for p in (root / "openspec/specs/cap-a").iterdir())
+            self.assertEqual(names, ["changelog.md"])
+            text = (root / "openspec/specs/cap-a/changelog.md").read_text(encoding="utf-8")
+            self.assertIn("## 迁入前的变更记录", text)
+            self.assertIn("- 旧条目", text)
+            self.assertIn("- [修改] 需求：R", text)
+
 
 
 class RestoreEntryKeysTest(unittest.TestCase):

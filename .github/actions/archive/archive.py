@@ -39,8 +39,30 @@ def delta_summary(spec: Path) -> list[str]:
     return items
 
 
+def changelog_path(capability_dir: Path) -> Path:
+    """统一使用 changelog.md。从其他仓库迁入的 CHANGELOG.md 等写法并入其中，避免大小写不同的两份文件
+    （在不区分大小写的文件系统上互相覆盖）。"""
+    path = capability_dir / "changelog.md"
+    if not capability_dir.is_dir():
+        return path
+    # 按目录中的实际文件名判断：不区分大小写的文件系统上 path.is_file() 对 CHANGELOG.md 也为真
+    names = {p.name for p in capability_dir.iterdir()}
+    for name in sorted(n for n in names if n.lower() == "changelog.md" and n != "changelog.md"):
+        other = capability_dir / name
+        legacy = re.sub(r"^# .*\n", "## 迁入前的变更记录\n", other.read_text(encoding="utf-8"), count=1)
+        if "changelog.md" in names:
+            current = path.read_text(encoding="utf-8").rstrip("\n")
+            other.unlink()
+            path.write_text(current + "\n\n" + legacy, encoding="utf-8")
+        else:
+            other.unlink()
+            path.write_text("# Spec Changelog\n\n" + legacy, encoding="utf-8")
+            names.add("changelog.md")
+    return path
+
+
 def append_changelog(store: Path, capability: str, meta: dict, change: str, items: list[str]) -> None:
-    path = store / "openspec" / "specs" / capability / "changelog.md"
+    path = changelog_path(store / "openspec" / "specs" / capability)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.is_file() else "# Spec Changelog\n"
     entry = (
@@ -136,12 +158,22 @@ def main() -> int:
     archived_meta = load_yaml(archived_dir / ".openspec.yaml")
     archived_meta["status"] = "已归档"
     (archived_dir / ".openspec.yaml").write_text(dump_yaml(archived_meta), encoding="utf-8")
-    for capability, items in summaries.items():
-        if items:
-            append_changelog(store, capability, archived_meta, args.change, items)
+    # retire_capabilities 退役的能力：spec.md 已被删除，目录中残留的 changelog 一并删除，
+    # 否则只剩 changelog 的目录会让 Store 检查按规范校验而失败；变更记录保留在归档的 change 中
+    retired = [c for c in summaries if not (store / "openspec" / "specs" / c / "spec.md").is_file()]
+    for capability in retired:
+        capability_dir = store / "openspec" / "specs" / capability
+        if capability_dir.is_dir():
+            for leftover in capability_dir.iterdir():
+                leftover.unlink()
+            capability_dir.rmdir()
+    active = [c for c in summaries if c not in retired]
+    for capability in active:
+        if summaries[capability]:
+            append_changelog(store, capability, archived_meta, args.change, summaries[capability])
 
-    missing_purpose = fill_purposes(store, proposal, list(summaries))
-    uncovered = wiki_uncovered(store, args.store_repo, list(summaries))
+    missing_purpose = fill_purposes(store, proposal, active)
+    uncovered = wiki_uncovered(store, args.store_repo, active)
 
     impls = [i for i in archived_meta.get("implementations") or [] if isinstance(i, dict)]
     impl_lines = "\n".join(f"- [{i.get('pr')}]({i.get('url')})：{i.get('basis') or ''}（置信度 {i.get('confidence') or '-'}）" for i in impls)
@@ -163,7 +195,8 @@ def main() -> int:
 请逐条确认上述差异是否接受；需要调整需求时，在本 PR 中直接修改对应的主 spec。确认后点击 Ready for review 运行 Store 检查，通过后合并。
 
 ## changelog 预览
-{chr(10).join(f'- `openspec/specs/{cap}/changelog.md` 追加一条' for cap, items in summaries.items() if items) or '无'}
+{chr(10).join(f'- `openspec/specs/{cap}/changelog.md` 追加一条' for cap in active if summaries[cap]) or '无'}
+{chr(10).join(f'- `{cap}` 已退役，删除 `openspec/specs/{cap}/`' for cap in retired)}
 """
     Path(args.body).write_text(body, encoding="utf-8")
     print(f"已归档到 {archived_dir.relative_to(store)}")
