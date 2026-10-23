@@ -95,17 +95,18 @@ ${DIFF_TRUNCATED}"
 
 # ── DeepSeek 优先调用 ──
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+  # 模型默认先推理，推理 token 也计入 max_tokens；上限过小时正文为空（finish_reason=length）
   PAYLOAD=$(jq -n \
     --arg model "$DEEPSEEK_MODEL" \
     --arg content "$FULL_INPUT" \
     '{
       model: $model,
       messages: [{role: "user", content: $content}],
-      max_tokens: 1024,
+      max_tokens: 65536,
       temperature: 0.3
     }')
 
-  RESP=$(curl -sS -X POST "https://api.deepseek.com/chat/completions" \
+  RESP=$(curl -sS --max-time 600 -X POST "https://api.deepseek.com/chat/completions" \
     -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD" || echo '{}')
@@ -117,7 +118,7 @@ if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
     exit 0
   fi
 
-  ERR=$(echo "$RESP" | jq -r '.error.message // .error // "no content returned"')
+  ERR=$(echo "$RESP" | jq -r '.error.message // .error // "empty content (finish_reason=\(.choices[0].finish_reason // "unknown"), usage=\(.usage // {} | tojson))"')
   echo "  ⚠ DeepSeek summarize failed ($DEEPSEEK_MODEL): $ERR, falling back to OpenRouter..." >&2
 else
   echo "  → DEEPSEEK_API_KEY not set, using OpenRouter directly" >&2
