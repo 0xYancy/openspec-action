@@ -2,7 +2,7 @@
 
 输入说明：
 
-- `changes`：已批准、已实现的 change，以及需求草稿 PR 中尚未批准的草稿 change（带 `draft_pr`，状态为草稿，同样可以关联），含 `repositories`（涉及仓库）、`proposal` 与 `specs`（需求与验收场景 `AC-<序号>`）。
+- `changes`：已批准、已实现的 change，以及 Store 中尚未合并的 PR 里新增的 change（带 `draft_pr`，同样可以关联），含 `repositories`（涉及仓库）、`proposal` 与 `specs`（需求与验收场景 `AC-<序号>`）。
 - `merged`：待匹配的实现单元。`kind` 为 `pr` 时是一个已合并 PR；为 `commits` 时是不经 PR、直接推送到观察分支的一批提交（标识形如 `owner/repo@abc1234..def5678`，`body` 为各提交说明）。均含标题、描述、改动文件、部分 diff，以及 `hints`（其中出现的 change 名或 ID 等提示信号）。
 - 下文的「PR」指实现单元，输出时 `pr` 字段原样填写其标识。
 - `rejected`：需求侧拒绝过的 (PR, change) 组合。

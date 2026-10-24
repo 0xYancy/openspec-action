@@ -3,7 +3,7 @@
 
 用法：python3 check.py --store <dir> --base-ref <origin/main> --author <PR 作者>
 
-- 主分支上的活动 change 只能是已批准或已实现（草稿不能合并进主分支）；
+- 主分支上的活动 change 只能是已批准或已实现（Store 已取消草稿状态）；
 - 归档目录中的 change 必须是已归档；
 - 不允许出现执行类字段（progress、estimate、actual_days）；
 - 自动化（机器人）提交的 PR 不得改动受保护文件。
@@ -45,7 +45,7 @@ def main() -> int:
             if name in touched_archive and change["status"] != "已归档":
                 problems.append(f"`{change['dir']}`：归档目录中的 change 状态应为「已归档」，当前为「{change['status'] or '空'}」")
         elif change["status"] not in ACTIVE_OK:
-            hint = "；请在请求审阅前把 status 改为「已批准」" if change["status"] == "草稿" else ""
+            hint = "；Store 已取消草稿状态，请改为「已批准」" if change["status"] == "草稿" else ""
             problems.append(f"`{change['dir']}`：状态「{change['status'] or '空'}」不能合并进主分支{hint}")
         if name in touched or name in touched_archive:
             bad = [f for f in FORBIDDEN_FIELDS if f in change["meta"]]

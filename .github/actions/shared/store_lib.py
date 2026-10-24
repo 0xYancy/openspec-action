@@ -180,7 +180,7 @@ def load_draft_changes(store: Path, repo: str, token: str, workdir: Path) -> tup
                     "dir": str(directory),
                     "archived": False,
                     "meta": meta,
-                    "status": str(meta.get("status") or "草稿"),
+                    "status": str(meta.get("status") or "已批准"),
                     "repositories": [str(r) for r in meta.get("repositories") or []],
                     "implementations": meta.get("implementations") or [],
                     "draft_pr": {"number": pr["number"], "url": pr["html_url"]},

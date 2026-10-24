@@ -354,7 +354,7 @@ def main() -> int:
                 ref = pr_ref(slug, pr["number"])
                 text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}\n{pr['head']['ref']}"
                 hinted = [h["change"] for h in hints_for(text, candidates, args.store_repo) if h["change"]]
-                covering = [c["name"] for c in candidates if c["status"] == "已批准" and slug in c["repositories"]]
+                covering = [c["name"] for c in candidates if c["status"] == "已批准" and not c.get("draft_pr") and slug in c["repositories"]]
                 if hinted:
                     links, basis = hinted, "提示信号"
                 elif len(covering) == 1:
