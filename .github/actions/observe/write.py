@@ -25,6 +25,7 @@ from store_lib import dump_yaml, guarded_paths, load_yaml, parse_marker, render_
 
 LABEL = "obs"
 REJECTED_LABEL = "obs:rejected"
+ARCHIVE_LABEL = "obs:archive"
 
 
 def run(store: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
@@ -104,6 +105,7 @@ def link_body(change: dict, link: dict, store_repo: str) -> str:
 - 置信度为「低」的关联请重点确认。
 - 审阅后点击 Ready for review 运行 Store 检查，检查通过后再合并。
 - 匹配错误时关闭本 PR 并加上 `{REJECTED_LABEL}` 标签，之后不会再提出相同的关联。
+- 已经验证过、不需要再测试时，加上 `{ARCHIVE_LABEL}` 标签：本分支会追加归档提交，合并本 PR 即直接完成验收归档。
 """
 
 
@@ -122,7 +124,8 @@ def unregistered_body(item: dict) -> str:
 
 
 def ensure_labels(store: Path) -> None:
-    for name, color, desc in ((LABEL, "0e8a16", "实现观察起草的 PR"), (REJECTED_LABEL, "b60205", "需求侧拒绝的观察匹配")):
+    for name, color, desc in ((LABEL, "0e8a16", "实现观察起草的 PR"), (REJECTED_LABEL, "b60205", "需求侧拒绝的观察匹配"),
+                              (ARCHIVE_LABEL, "5319e7", "合并本 PR 时直接完成验收归档")):
         run(store, "gh", "label", "create", name, "--color", color, "--description", desc, "--force", check=False)
 
 

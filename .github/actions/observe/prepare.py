@@ -106,7 +106,8 @@ def collect_handled(changes: list[dict], obs_prs: list[dict]) -> tuple[set[str],
         if pr["state"] == "closed" and not pr["merged"] and "obs:rejected" in pr["labels"]:
             rejected += [{"pr": r, "change": pr["marker"].get("change")} for r in refs]
         handled.update(refs)
-        if pr["state"] == "open" and pr["marker"].get("change"):
+        # 带 obs:archive 的 PR 已在分支上归档，不再接收追加的实现记录
+        if pr["state"] == "open" and pr["marker"].get("change") and "obs:archive" not in pr["labels"]:
             open_drafts[pr["marker"]["change"]] = {"number": pr["number"], "url": pr["url"], "branch": pr["branch"]}
     return handled, rejected, open_drafts
 

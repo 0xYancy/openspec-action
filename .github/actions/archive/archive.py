@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """验收归档：归档 change、合并 delta、写 changelog、置为已归档，并生成归档 PR 正文。
 
-用法：python3 archive.py --store <dir> --store-repo <owner/repo> --change <name> --body <out.md>
+用法：python3 archive.py --store <dir> --store-repo <owner/repo> --change <name> --body <out.md> [--pr <number>]
+     python3 archive.py target --store <dir> --base <ref>    # 输出 PR 分支涉及的 change（JSON）
+
+--pr 表示在该观察 PR 的分支上归档：该 PR 尚未合并，其中记录的差异也一并汇总。
 
 环境变量：GH_TOKEN（读取 Store 中已合并的观察 PR，用于汇总尚未处理的差异）
 
@@ -11,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import subprocess
@@ -106,7 +110,22 @@ def wiki_uncovered(store: Path, store_repo: str, capabilities: list[str]) -> lis
     return [c for c in capabilities if not re.search(rf"^\s*-\s*{re.escape(f'{store_repo}/{c}')}\s*(#.*)?$", text, re.M)]
 
 
-def diffs_from_obs(store_repo: str, change: str) -> list[str]:
+def pr_target(paths: list[str]) -> dict:
+    """由 PR 相对 base 改动的文件判断要归档的 change：恰好一个活动 change 时返回其名称；
+    只改动了归档目录时视为已归档；其余情况给出不能归档的原因。"""
+    active = sorted({p.split("/")[2] for p in paths
+                     if p.startswith("openspec/changes/") and p.count("/") >= 3 and p.split("/")[2] != "archive"})
+    archived = sorted({p.split("/")[3] for p in paths if p.startswith("openspec/changes/archive/") and p.count("/") >= 4})
+    if len(active) == 1:
+        return {"change": active[0]}
+    if not active and archived:
+        return {"archived": archived}
+    if not active:
+        return {"reason": "本 PR 没有改动任何活动 change"}
+    return {"reason": "本 PR 改动了多个活动 change（" + "、".join(f"`{c}`" for c in active) + "），只能归档恰好一个 change"}
+
+
+def diffs_from_obs(store_repo: str, change: str, current_pr: int | None = None) -> list[str]:
     token = os.environ.get("GH_TOKEN", "")
     if not token:
         return []
@@ -116,7 +135,7 @@ def diffs_from_obs(store_repo: str, change: str) -> list[str]:
     except GitHubError as error:
         return [f"- （读取观察 PR 失败：{error}）"]
     for pr in prs:
-        if not pr["merged"] or pr["marker"].get("change") != change:
+        if pr["number"] != current_pr and (not pr["merged"] or pr["marker"].get("change") != change):
             continue
         body = subprocess.run(["gh", "pr", "view", str(pr["number"]), "--repo", store_repo, "--json", "body", "--jq", ".body"],
                               capture_output=True, text=True).stdout
@@ -126,10 +145,24 @@ def diffs_from_obs(store_repo: str, change: str) -> list[str]:
     return found
 
 
+def target_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--store", required=True)
+    parser.add_argument("--base", required=True)
+    args = parser.parse_args(argv)
+    paths = subprocess.run(["git", "diff", "--name-only", f"{args.base}...HEAD"], cwd=args.store,
+                           capture_output=True, text=True, check=True).stdout.split()
+    print(json.dumps(pr_target(paths), ensure_ascii=False))
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["target"]:
+        return target_main(sys.argv[2:])
     parser = argparse.ArgumentParser()
     for name in ("--store", "--store-repo", "--change", "--body"):
         parser.add_argument(name, required=True)
+    parser.add_argument("--pr", type=int)
     args = parser.parse_args()
     store = Path(args.store).resolve()
     change_dir = store / "openspec" / "changes" / args.change
@@ -143,7 +176,7 @@ def main() -> int:
 
     specs = sorted((change_dir / "specs").glob("*/spec.md")) if (change_dir / "specs").is_dir() else []
     summaries = {spec.parent.name: delta_summary(spec) for spec in specs}
-    diffs = diffs_from_obs(args.store_repo, args.change)
+    diffs = diffs_from_obs(args.store_repo, args.change, args.pr)
     proposal = (change_dir / "proposal.md").read_text(encoding="utf-8") if (change_dir / "proposal.md").is_file() else ""
 
     result = subprocess.run(["openspec", "archive", args.change, "--yes"], cwd=store, capture_output=True, text=True)
@@ -178,8 +211,11 @@ def main() -> int:
     impls = [i for i in archived_meta.get("implementations") or [] if isinstance(i, dict)]
     impl_lines = "\n".join(f"- [{i.get('pr')}]({i.get('url')})：{i.get('basis') or ''}（置信度 {i.get('confidence') or '-'}）" for i in impls)
     spec_lines = "\n".join(f"**{cap}**\n" + "\n".join(items) for cap, items in summaries.items() if items) or "本 change 没有 delta spec。"
-    body = f"""## 摘要
-需求侧验收通过，归档 `{args.change}`（{archived_meta.get('title') or ''}）。合并本 PR 后，delta 并入主 specs，change 状态为已归档。
+    summary = (f"需求负责人加上了 `obs:archive` 标签，本 PR 的分支已追加归档提交：合并本 PR 即完成 `{args.change}`（{archived_meta.get('title') or ''}）的验收归档，"
+               "delta 并入主 specs，change 状态为已归档，不再经过「已实现 / 测试中」。" if args.pr else
+               f"需求侧验收通过，归档 `{args.change}`（{archived_meta.get('title') or ''}）。合并本 PR 后，delta 并入主 specs，change 状态为已归档。")
+    body = f"""## {"验收归档（obs:archive）" if args.pr else "摘要"}
+{summary}
 
 ## 主 specs 改动
 {spec_lines}

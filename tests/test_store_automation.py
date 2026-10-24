@@ -214,9 +214,10 @@ class DedupeTest(unittest.TestCase):
             self.obs(10, "open", False, ["obs"], "tvl", ["o/dapp#2"]),
             self.obs(11, "closed", False, ["obs", "obs:rejected"], "early", ["o/dapp#3"]),
             self.obs(12, "closed", True, ["obs"], "early", ["o/dapp#4"]),
+            self.obs(13, "open", False, ["obs", "obs:archive"], "done", ["o/dapp#5"]),
         ]
         handled, rejected, drafts = prepare.collect_handled(changes, obs)
-        self.assertEqual(handled, {"o/dapp#1", "o/dapp#2", "o/dapp#3", "o/dapp#4"})
+        self.assertEqual(handled, {"o/dapp#1", "o/dapp#2", "o/dapp#3", "o/dapp#4", "o/dapp#5"})
         self.assertEqual(rejected, [{"pr": "o/dapp#3", "change": "early"}])
         self.assertEqual(list(drafts), ["tvl"])
         self.assertEqual(drafts["tvl"]["branch"], "obs/10")
@@ -285,6 +286,28 @@ class ArchiveTest(unittest.TestCase):
             self.assertEqual(missing, ["cap-b", "cap-c"])
             self.assertIn(f"能力甲：{long_text}", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
             self.assertIn("能力丙：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-c/spec.md").read_text(encoding="utf-8"))
+
+    def test_pr_target(self) -> None:
+        self.assertEqual(archive.pr_target(["openspec/changes/tvl/.openspec.yaml"]), {"change": "tvl"})
+        self.assertEqual(archive.pr_target(["openspec/changes/obs-dapp-28/proposal.md", "openspec/changes/obs-dapp-28/specs/a/spec.md"]),
+                         {"change": "obs-dapp-28"})
+        self.assertEqual(archive.pr_target(["openspec/changes/archive/2026-10-24-tvl/.openspec.yaml", "openspec/specs/a/spec.md"]),
+                         {"archived": ["2026-10-24-tvl"]})
+        self.assertIn("没有改动", archive.pr_target(["openspec/specs/a/spec.md"])["reason"])
+        self.assertIn("`a`、`b`", archive.pr_target(["openspec/changes/a/x.md", "openspec/changes/b/y.md"])["reason"])
+
+    def test_archive_on_pr_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git(root, "init", "-q", "-b", "main")
+            write_file(root, "openspec/specs/cap/spec.md", "# cap Specification\n\n## Purpose\n" + "x" * 60 + "\n\n## Requirements\n")
+            git(root, "add", "-A"); git(root, "commit", "-qm", "base")
+            git(root, "checkout", "-qb", "obs/tvl")
+            write_file(root, "openspec/changes/tvl/.openspec.yaml", "schema: store\ntitle: T\nstatus: 已实现\n")
+            git(root, "add", "-A"); git(root, "commit", "-qm", "obs")
+            out = subprocess.run([sys.executable, str(ACTIONS / "archive" / "archive.py"), "target", "--store", str(root), "--base", "main"],
+                                 capture_output=True, text=True, check=True).stdout
+            self.assertEqual(out.strip(), '{"change": "tvl"}')
 
     def test_wiki_uncovered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

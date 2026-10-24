@@ -1,11 +1,16 @@
 name: 'OpenSpec Store Accept & Archive'
-description: '需求侧验收后起草归档草稿 PR：归档 change、合并 delta 到主 specs、写 changelog、状态置为已归档'
+description: '需求侧验收后归档 change：合并 delta 到主 specs、写 changelog、状态置为已归档。默认起草归档草稿 PR；给定 pr 时在该观察 PR 的分支上归档'
 author: '0xYancy'
 
 inputs:
   change:
-    description: '要归档的 change 名称'
-    required: true
+    description: '要归档的 change 名称（不给 pr 时必填）'
+    required: false
+    default: ''
+  pr:
+    description: '观察 PR 编号：在该 PR 的分支上归档并推送回该分支，不另开 PR；change 由 PR 的改动确定'
+    required: false
+    default: ''
   store-token:
     description: 'Store 仓库的 GITHUB_TOKEN（contents 与 pull-requests 写权限）'
     required: false
@@ -17,7 +22,7 @@ inputs:
 
 outputs:
   pr-url:
-    description: '归档草稿 PR 地址'
+    description: '归档草稿 PR 地址（给定 pr 时为空）'
     value: ${{ steps.pr.outputs.url }}
 
 runs:
@@ -30,23 +35,101 @@ runs:
         npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
         openspec --version
 
+    - name: Resolve target
+      id: target
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        CHANGE: ${{ inputs.change }}
+        PR: ${{ inputs.pr }}
+      run: |
+        if [ -z "$PR" ]; then
+          echo "change=$CHANGE" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        case "$PR" in *[!0-9]*) echo "pr 必须是数字"; exit 1;; esac
+        INFO=$(gh pr view "$PR" --repo "${{ github.repository }}" --json state,isCrossRepository,headRefName,baseRefName,isDraft)
+        STATE=$(jq -r .state <<<"$INFO"); CROSS=$(jq -r .isCrossRepository <<<"$INFO")
+        HEAD=$(jq -r .headRefName <<<"$INFO"); BASE=$(jq -r .baseRefName <<<"$INFO")
+        echo "draft=$(jq -r .isDraft <<<"$INFO")" >> "$GITHUB_OUTPUT"
+        if [ "$STATE" != "OPEN" ] || [ "$CROSS" = "true" ]; then
+          echo "PR #$PR 不是本仓库中打开的 PR，跳过"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        git fetch --quiet origin "$HEAD" "$BASE"
+        git checkout --quiet -B "$HEAD" "origin/$HEAD"
+        TARGET=$(python3 "${{ github.action_path }}/archive.py" target --store . --base "origin/$BASE")
+        echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+        if jq -e .change <<<"$TARGET" >/dev/null; then
+          echo "change=$(jq -r .change <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+        elif jq -e .archived <<<"$TARGET" >/dev/null; then
+          echo "PR #$PR 的分支已经完成归档，不重复执行"; echo "skip=true" >> "$GITHUB_OUTPUT"
+        else
+          REASON=$(jq -r .reason <<<"$TARGET")
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "未执行 \`obs:archive\`：$REASON。分支没有改动。"
+          echo "$REASON"; echo "skip=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Archive change
+      if: steps.target.outputs.skip != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.store-token }}
         OPENSPEC_TELEMETRY: '0'
-        CHANGE: ${{ inputs.change }}
+        CHANGE: ${{ steps.target.outputs.change }}
+        PR: ${{ inputs.pr }}
       run: |
         case "$CHANGE" in *[!a-z0-9-]*|'') echo "change 名称只能包含小写字母、数字和连字符"; exit 1;; esac
         python3 "${{ github.action_path }}/archive.py" --store . --store-repo "${{ github.repository }}" \
-          --change "$CHANGE" --body "$RUNNER_TEMP/archive-body.md"
+          --change "$CHANGE" --body "$RUNNER_TEMP/archive-body.md" ${PR:+--pr "$PR"} > "$RUNNER_TEMP/archive-out.txt" || {
+          cat "$RUNNER_TEMP/archive-out.txt"
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body-file - <<MSG
+        未执行 \`obs:archive\`：$(cat "$RUNNER_TEMP/archive-out.txt")
+        MSG
+          fi
+          exit 1
+        }
+        cat "$RUNNER_TEMP/archive-out.txt"
+
+    - name: Push to observation PR
+      if: inputs.pr != '' && steps.target.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        PR: ${{ inputs.pr }}
+        HEAD: ${{ steps.target.outputs.head }}
+        DRAFT: ${{ steps.target.outputs.draft }}
+      run: |
+        python3 - <<'EOF'
+        import sys; sys.path.insert(0, "${{ github.action_path }}/../shared")
+        from pathlib import Path
+        from store_lib import guarded_paths, revert_paths
+        allowed, denied = guarded_paths(Path("."))
+        if denied:
+            print("拒绝写入：" + ", ".join(denied)); revert_paths(Path("."), denied)
+        EOF
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add -A openspec/changes openspec/specs
+        git commit -m "archive: ${{ steps.target.outputs.change }}（obs:archive）"
+        git push origin "HEAD:refs/heads/$HEAD"
+        BODY=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body --jq .body)
+        { printf '%s\n\n---\n\n' "$BODY"; cat "$RUNNER_TEMP/archive-body.md"; } > "$RUNNER_TEMP/obs-body.md"
+        gh pr edit "$PR" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/obs-body.md"
+        # 推送用 GITHUB_TOKEN，不会触发 Store 检查：已就绪的 PR 改回草稿，重新标记就绪时检查针对新提交运行
+        if [ "$DRAFT" = "false" ]; then
+          gh pr ready "$PR" --repo "${{ github.repository }}" --undo
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "已在本分支完成归档提交，并把 PR 改回草稿。确认归档内容后请重新点击 Ready for review，Store 检查会针对新的提交运行。"
+        fi
+        { echo "## 验收归档（obs:archive）"; echo; echo "已在 PR #$PR 的分支上完成归档提交"; echo; cat "$RUNNER_TEMP/archive-body.md"; } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Open draft PR
+      if: inputs.pr == ''
       id: pr
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.store-token }}
-        CHANGE: ${{ inputs.change }}
+        CHANGE: ${{ steps.target.outputs.change }}
       run: |
         python3 - <<'EOF'
         import sys; sys.path.insert(0, "${{ github.action_path }}/../shared")
