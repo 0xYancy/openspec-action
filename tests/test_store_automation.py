@@ -293,6 +293,9 @@ class ArchiveTest(unittest.TestCase):
                          {"change": "obs-dapp-28"})
         self.assertEqual(archive.pr_target(["openspec/changes/archive/2026-10-24-tvl/.openspec.yaml", "openspec/specs/a/spec.md"]),
                          {"archived": ["2026-10-24-tvl"]})
+        # 已在本 PR 归档：原目录以删除形式出现在 diff 中
+        self.assertEqual(archive.pr_target(["openspec/changes/tvl/.openspec.yaml", "openspec/changes/archive/2026-10-24-tvl/.openspec.yaml"]),
+                         {"archived": ["2026-10-24-tvl"]})
         self.assertIn("没有改动", archive.pr_target(["openspec/specs/a/spec.md"])["reason"])
         self.assertIn("`a`、`b`", archive.pr_target(["openspec/changes/a/x.md", "openspec/changes/b/y.md"])["reason"])
 

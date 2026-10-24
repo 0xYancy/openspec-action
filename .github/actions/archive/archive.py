@@ -116,6 +116,8 @@ def pr_target(paths: list[str]) -> dict:
     active = sorted({p.split("/")[2] for p in paths
                      if p.startswith("openspec/changes/") and p.count("/") >= 3 and p.split("/")[2] != "archive"})
     archived = sorted({p.split("/")[3] for p in paths if p.startswith("openspec/changes/archive/") and p.count("/") >= 4})
+    # 已在本 PR 中归档的 change，其原目录会以删除的形式出现在 diff 里，不算活动 change
+    active = [c for c in active if not any(re.fullmatch(rf"\d{{4}}-\d{{2}}-\d{{2}}-{re.escape(c)}", a) for a in archived)]
     if len(active) == 1:
         return {"change": active[0]}
     if not active and archived:
