@@ -32,6 +32,7 @@ write = load("observe_write", ACTIONS / "observe" / "write.py")
 prepare = load("observe_prepare", ACTIONS / "observe" / "prepare.py")
 llm = load("observe_llm", ACTIONS / "observe" / "llm.py")
 archive = load("store_archive", ACTIONS / "archive" / "archive.py")
+draft = load("observe_draft", ACTIONS / "observe" / "draft.py")
 CHECK = ACTIONS / "store-check" / "check.py"
 
 
@@ -331,6 +332,87 @@ class ArchiveTest(unittest.TestCase):
             self.assertIn("- 旧条目", text)
             self.assertIn("- [修改] 需求：R", text)
 
+
+
+class PatchDraftTest(unittest.TestCase):
+    SPEC = textwrap.dedent("""\
+        # cap Specification
+
+        ## Purpose
+        定义质押页的赎回流程，包括赎回申请、等待期与领取规则，供前端与合约侧共同遵循，并说明各类异常情况下用户能看到的提示与可执行的操作。
+
+        ## Requirements
+
+        ### Requirement: 赎回确认
+        用户提交赎回时 SHALL 弹出二次确认。
+
+        #### Scenario: 提交赎回
+        - **当** 用户提交赎回
+        - **则** 弹出二次确认
+        """)
+
+    def test_check_draft(self) -> None:
+        specs = {"cap": self.SPEC}
+        ok = {"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n"}]}
+        self.assertEqual(draft.check_draft(ok, specs, set()), "")
+        self.assertIn("不存在", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 无此需求\n"}]}, specs, set()))
+        self.assertIn("ADDED / MODIFIED", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## REMOVED Requirements\n"}]}, specs, set()))
+        self.assertIn("未选定", draft.check_draft({"deltas": [{"capability": "other", "markdown": "## ADDED Requirements\n"}]}, specs, set()))
+        self.assertIn("Purpose", draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "短", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}))
+        self.assertIn("没有给出", draft.check_draft({"deltas": []}, specs, set()))
+
+    def test_merge_draft_updates_main_spec_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git(root, "init", "-q", "-b", "main")
+            write_file(root, "openspec/specs/cap/spec.md", self.SPEC)
+            git(root, "add", "-A"); git(root, "commit", "-qm", "base")
+            item = {"pr": "o/dapp@abc1234..def5678", "url": "https://x", "title": "T", "behavior": "去掉二次确认"}
+            plan = {"title": "赎回不再二次确认", "summary": "s", "deltas": [
+                {"capability": "cap", "purpose": "", "markdown": textwrap.dedent("""\
+                    ## MODIFIED Requirements
+
+                    ### Requirement: 赎回确认
+                    用户提交赎回时 SHALL 直接提交，MUST NOT 弹出二次确认。
+
+                    #### Scenario: 提交赎回
+                    - **当** 用户提交赎回
+                    - **则** 直接提交，不弹出二次确认
+                    """)},
+                {"capability": "net-menu", "purpose": "定义移动端网络切换菜单的展示范围与交互规则，保证菜单在各种屏幕尺寸与横竖屏切换下都能完整显示且可以正常操作。",
+                 "markdown": textwrap.dedent("""\
+                    ## ADDED Requirements
+
+                    ### Requirement: 菜单限制在视口内
+                    移动端网络菜单 SHALL 完整显示在视口内。
+
+                    #### Scenario: 小屏打开菜单
+                    - **当** 用户在小屏设备打开网络菜单
+                    - **则** 菜单完整显示在视口内
+                    """)},
+            ]}
+            summaries, reason = write.merge_draft(root, item, plan, dt.datetime(2026, 10, 25, tzinfo=dt.timezone.utc))
+            self.assertEqual(reason, "")
+            self.assertEqual(sorted(summaries), ["cap", "net-menu"])
+            self.assertIn("MUST NOT 弹出二次确认", (root / "openspec/specs/cap/spec.md").read_text(encoding="utf-8"))
+            net = (root / "openspec/specs/net-menu/spec.md").read_text(encoding="utf-8")
+            self.assertIn("定义移动端网络切换菜单", net)
+            self.assertNotIn("TBD", net)
+            self.assertIn("## 2026-10-25 · 补登 · o/dapp@abc1234..def5678", (root / "openspec/specs/cap/changelog.md").read_text(encoding="utf-8"))
+            changed = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=root, capture_output=True, text=True).stdout
+            self.assertNotIn("openspec/changes", changed)
+
+    def test_merge_draft_reports_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git(root, "init", "-q", "-b", "main")
+            write_file(root, "openspec/specs/cap/spec.md", self.SPEC)
+            git(root, "add", "-A"); git(root, "commit", "-qm", "base")
+            item = {"pr": "o/dapp#9", "url": "https://x", "title": "T", "behavior": "b"}
+            bad = {"deltas": [{"capability": "cap", "purpose": "", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\n没有关键词也没有场景\n"}]}
+            _, reason = write.merge_draft(root, item, bad, dt.datetime(2026, 10, 25, tzinfo=dt.timezone.utc))
+            self.assertTrue(reason)
+            self.assertFalse((root / "openspec/changes/obs-patch-9").exists())
 
 
 class RestoreEntryKeysTest(unittest.TestCase):

@@ -38,6 +38,10 @@ inputs:
     description: '没有位置记录时回看的天数'
     required: false
     default: '14'
+  openspec-version:
+    description: 'OpenSpec CLI 版本（与 framework.lock 一致），用于把未登记变化的 delta 并入主 spec'
+    required: false
+    default: '1.12.0'
 
 outputs:
   to-match:
@@ -105,11 +109,28 @@ runs:
           --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
           --out "$RUNNER_TEMP/openspec-obs/out/result.json"
 
+    - name: Draft spec updates for unregistered changes
+      if: steps.prepare.outputs.to-match != '0'
+      shell: bash
+      env:
+        DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
+        DEEPSEEK_MODEL: ${{ inputs.model }}
+      run: |
+        python3 "${{ github.action_path }}/draft.py" --store . \
+          --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
+          --result "$RUNNER_TEMP/openspec-obs/out/result.json" \
+          --out "$RUNNER_TEMP/openspec-obs/out/drafts.json"
+        if jq -e 'to_entries | any(.value.deltas)' "$RUNNER_TEMP/openspec-obs/out/drafts.json" >/dev/null && [ "${{ inputs.dry-run }}" != "true" ]; then
+          npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
+          openspec --version
+        fi
+
     - name: Write draft PRs
       if: steps.prepare.outputs.to-match != '0'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.store-token }}
+        OPENSPEC_TELEMETRY: '0'
       run: |
         DRY=""; [ "${{ inputs.dry-run }}" = "true" ] && DRY="--dry-run"
         python3 "${{ github.action_path }}/write.py" \
@@ -118,6 +139,7 @@ runs:
           --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
           --result "$RUNNER_TEMP/openspec-obs/out/result.json" \
           --state "$RUNNER_TEMP/openspec-obs/state/state.json" \
+          --drafts "$RUNNER_TEMP/openspec-obs/out/drafts.json" \
           --report "$RUNNER_TEMP/openspec-obs/out/report.md" $DRY
 
     - name: Save observe state
