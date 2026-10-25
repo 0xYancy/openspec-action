@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -354,13 +355,31 @@ class PatchDraftTest(unittest.TestCase):
 
     def test_check_draft(self) -> None:
         specs = {"cap": self.SPEC}
-        ok = {"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n"}]}
+        ok = {"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 提交赎回\n- **当** a\n- **则** b\n"}]}
         self.assertEqual(draft.check_draft(ok, specs, set()), "")
         self.assertIn("不存在", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 无此需求\n"}]}, specs, set()))
         self.assertIn("ADDED / MODIFIED", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## REMOVED Requirements\n"}]}, specs, set()))
         self.assertIn("未选定", draft.check_draft({"deltas": [{"capability": "other", "markdown": "## ADDED Requirements\n"}]}, specs, set()))
         self.assertIn("Purpose", draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "短", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}))
         self.assertIn("没有给出", draft.check_draft({"deltas": []}, specs, set()))
+        dropped = {"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 新场景\n- **当** a\n- **则** b\n"}]}
+        self.assertIn("漏掉了原有场景：提交赎回", draft.check_draft(dropped, specs, set()))
+        mixed = {"deltas": [{"capability": "cap", "markdown": "## ADDED Requirements\n\n### Requirement: 新需求\nx SHALL y\n\n## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 提交赎回\n- **当** a\n- **则** b\n"}]}
+        self.assertEqual(draft.check_draft(mixed, specs, set()), "")
+
+    def test_draft_retries_once_with_reason(self) -> None:
+        bad = {"title": "t", "summary": "s", "deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n"}]}
+        good = {"title": "t", "summary": "s", "deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 提交赎回\n- **当** a\n- **则** b\n"}]}
+        replies = iter([{"capabilities": [{"name": "cap"}]}, bad, good])
+        sent = []
+        original = draft.call
+        draft.call = lambda messages, key, model: (sent.append(messages), json.dumps(next(replies), ensure_ascii=False))[1]
+        try:
+            result = draft.draft_one({"behavior": "b"}, {"pr": "o/d#1"}, {"cap": self.SPEC}, "k", "m")
+        finally:
+            draft.call = original
+        self.assertNotIn("error", result)
+        self.assertIn("漏掉了原有场景", sent[-1][-1]["content"])
 
     def test_merge_draft_updates_main_spec_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

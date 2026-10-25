@@ -24,6 +24,7 @@ from llm import call  # noqa: E402
 CAPABILITY = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 DELTA_SECTION = re.compile(r"^## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*$", re.M)
 REQUIREMENT = re.compile(r"^### Requirement:\s*(.+?)\s*$", re.M)
+SCENARIO = re.compile(r"^#### Scenario:\s*(.+?)\s*$", re.M)
 PATCH_CHARS = 20000
 
 
@@ -41,15 +42,34 @@ def unit_view(unit: dict) -> dict:
     return {k: unit.get(k) for k in ("pr", "title", "body", "files")} | {"patch": (unit.get("patch") or "")[:PATCH_CHARS]}
 
 
-def ask(system_file: str, payload: dict, key: str, model: str) -> dict:
-    messages = [
+def ask(system_file: str, payload: dict, key: str, model: str, history: list[dict] | None = None) -> tuple[dict, list[dict]]:
+    """返回 (结论, 本次对话)。传入 history 时在其后继续对话（用于带上校验原因重写）。"""
+    messages = history or [
         {"role": "system", "content": (HERE / system_file).read_text(encoding="utf-8")},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2)},
     ]
-    result = json.loads(call(messages, key, model))
+    content = call(messages, key, model)
+    result = json.loads(content)
     if not isinstance(result, dict):
         raise ValueError("模型输出不是 JSON 对象")
-    return result
+    return result, messages + [{"role": "assistant", "content": content}]
+
+
+def requirement_blocks(text: str) -> dict[str, str]:
+    """需求标题 → 该需求的完整文本（到下一个需求或二级标题为止）。"""
+    blocks, matches = {}, list(REQUIREMENT.finditer(text))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[match.start():end]
+        heading = re.search(r"^## ", block, re.M)
+        blocks[match.group(1)] = block[:heading.start()] if heading else block
+    return blocks
+
+
+def delta_sections(markdown: str) -> dict[str, str]:
+    """delta 中各操作段落的正文：{"MODIFIED": ..., "ADDED": ...}。"""
+    parts = DELTA_SECTION.split(markdown)
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
 
 
 def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
@@ -69,27 +89,33 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
         if name in new and ("MODIFIED" in sections or len(str(delta.get("purpose") or "")) < 50):
             return f"新能力 `{name}` 只能新增需求，且 Purpose 不少于 50 个字符"
         if name in existing:
-            titles = set(REQUIREMENT.findall(specs[name]))
-            modified = REQUIREMENT.findall(markdown.split("## ADDED Requirements")[0]) if "MODIFIED" in sections else []
-            unknown = [t for t in modified if t not in titles]
+            current = requirement_blocks(specs[name])
+            modified = requirement_blocks(delta_sections(markdown).get("MODIFIED", ""))
+            unknown = [t for t in modified if t not in current]
             if unknown:
                 return f"`{name}` 的 MODIFIED 需求在主 spec 中不存在：{'、'.join(unknown)}"
+            # MODIFIED 整块替换原需求，漏写的原有场景会被删掉（openspec archive 也会因此拒绝合并）
+            for title, block in modified.items():
+                dropped = [sc for sc in SCENARIO.findall(current[title]) if sc not in SCENARIO.findall(block)]
+                if dropped:
+                    return f"`{name}` 的 MODIFIED 需求「{title}」漏掉了原有场景：{'、'.join(dropped)}；请原样保留它们，或只修改其内容"
     return ""
 
 
 def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, model: str) -> dict:
-    selected = ask("draft_select.md", {
+    selected, _ = ask("draft_select.md", {
         "unit": unit_view(unit),
         "behavior": item.get("behavior"),
         "capabilities": [capability_view(n, t) for n, t in existing_text.items()],
-    }, key, model).get("capabilities") or []
+    }, key, model)
+    selected = selected.get("capabilities") or []
     picked = [c for c in selected if isinstance(c, dict) and CAPABILITY.match(str(c.get("name") or ""))][:3]
     if not picked:
         return {"error": "模型没有选出需要更新的能力"}
     existing = {c["name"] for c in picked if c["name"] in existing_text}
     new = {c["name"] for c in picked if c["name"] not in existing_text}
     specs = {n: existing_text[n] for n in sorted(existing)}
-    draft = ask("draft_write.md", {
+    draft, history = ask("draft_write.md", {
         "unit": unit_view(unit),
         "behavior": item.get("behavior"),
         "specs": specs,
@@ -97,7 +123,12 @@ def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, m
     }, key, model)
     reason = check_draft(draft, specs, new)
     if reason:
-        return {"error": reason}
+        # 带上校验原因让模型重写一次
+        retry = history + [{"role": "user", "content": f"上次输出不合法：{reason}。请修正后重新输出完整的 JSON 对象。"}]
+        draft, _ = ask("draft_write.md", {}, key, model, retry)
+        reason = check_draft(draft, specs, new)
+        if reason:
+            return {"error": f"重写后仍不合法：{reason}"}
     return {
         "title": str(draft.get("title") or "")[:60],
         "summary": str(draft.get("summary") or ""),
