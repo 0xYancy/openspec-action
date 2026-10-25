@@ -93,6 +93,7 @@ def collect_handled(changes: list[dict], obs_prs: list[dict]) -> tuple[set[str],
 
     已处理：主分支某个 change 的 implementations 中已有，或任一观察 PR（打开中或已关闭）的标记中列出过。
     被拒绝：需求侧关闭（未合并）并加上 obs:rejected 标签的观察 PR 中的组合。
+    关闭（未合并）并加上 obs:redo 标签的观察 PR 不计入：其中的实现单元要按当前流程重新观察。
     """
     handled: set[str] = set()
     for change in changes:
@@ -103,6 +104,8 @@ def collect_handled(changes: list[dict], obs_prs: list[dict]) -> tuple[set[str],
     open_drafts: dict[str, dict] = {}
     for pr in obs_prs:
         refs = [str(r) for r in pr["marker"].get("prs") or []]
+        if pr["state"] == "closed" and not pr["merged"] and "obs:redo" in pr["labels"]:
+            continue
         if pr["state"] == "closed" and not pr["merged"] and "obs:rejected" in pr["labels"]:
             rejected += [{"pr": r, "change": pr["marker"].get("change")} for r in refs]
         handled.update(refs)

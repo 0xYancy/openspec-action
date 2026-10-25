@@ -30,6 +30,7 @@ from archive import TBD_PURPOSE, changelog_path, delta_summary  # noqa: E402
 LABEL = "obs"
 REJECTED_LABEL = "obs:rejected"
 ARCHIVE_LABEL = "obs:archive"
+REDO_LABEL = "obs:redo"
 
 
 def run(store: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
@@ -187,7 +188,8 @@ def merge_draft(store: Path, item: dict, draft: dict, now: dt.datetime) -> tuple
 
 def ensure_labels(store: Path) -> None:
     for name, color, desc in ((LABEL, "0e8a16", "实现观察起草的 PR"), (REJECTED_LABEL, "b60205", "需求侧拒绝的观察匹配"),
-                              (ARCHIVE_LABEL, "5319e7", "合并本 PR 时直接完成验收归档")):
+                              (ARCHIVE_LABEL, "5319e7", "合并本 PR 时直接完成验收归档"),
+                              (REDO_LABEL, "fbca04", "关闭后按当前流程重新观察其中的实现")):
         run(store, "gh", "label", "create", name, "--color", color, "--description", desc, "--force", check=False)
 
 

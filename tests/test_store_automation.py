@@ -216,6 +216,7 @@ class DedupeTest(unittest.TestCase):
             self.obs(11, "closed", False, ["obs", "obs:rejected"], "early", ["o/dapp#3"]),
             self.obs(12, "closed", True, ["obs"], "early", ["o/dapp#4"]),
             self.obs(13, "open", False, ["obs", "obs:archive"], "done", ["o/dapp#5"]),
+            self.obs(14, "closed", False, ["obs", "obs:redo"], None, ["o/dapp#6"]),
         ]
         handled, rejected, drafts = prepare.collect_handled(changes, obs)
         self.assertEqual(handled, {"o/dapp#1", "o/dapp#2", "o/dapp#3", "o/dapp#4", "o/dapp#5"})
