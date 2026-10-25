@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -433,6 +434,95 @@ class PatchDraftTest(unittest.TestCase):
             _, reason = write.merge_draft(root, item, bad, dt.datetime(2026, 10, 25, tzinfo=dt.timezone.utc))
             self.assertTrue(reason)
             self.assertFalse((root / "openspec/changes/obs-patch-9").exists())
+
+
+class PatchRollupTest(unittest.TestCase):
+    SPEC = PatchDraftTest.SPEC
+
+    @staticmethod
+    def modified(*scenarios: str) -> str:
+        body = "".join(f"\n#### Scenario: {name}\n- **当** a\n- **则** b\n" for name in ("提交赎回", *scenarios))
+        return "## MODIFIED Requirements\n\n### Requirement: 赎回确认\n用户提交赎回时 SHALL 弹出二次确认。\n" + body
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.remote = base / "remote.git"
+        git(base, "init", "-q", "--bare", "-b", "main", str(self.remote))
+        self.root = base / "store"
+        git(base, "clone", "-q", str(self.remote), str(self.root))
+        git(self.root, "config", "user.name", "t"); git(self.root, "config", "user.email", "t@t")
+        write_file(self.root, "openspec/specs/cap/spec.md", self.SPEC)
+        git(self.root, "add", "-A"); git(self.root, "commit", "-qm", "base"); git(self.root, "push", "-q", "origin", "main")
+        self.gh_calls: list[tuple] = []
+        self.original = (write.run, write.draft_one)
+        real_run = write.run
+
+        def fake_run(store, *args, check=True, input_text=None):
+            if args[0] == "gh":
+                self.gh_calls.append((args, input_text))
+                if args[1:3] == ("pr", "view"):
+                    return json.dumps({"body": "## 补登汇总\n旧内容\n<!-- openspec-obs: {\"change\": null, \"prs\": [\"o/d#1\"]} -->", "isDraft": False})
+                return "https://github.com/o/s/pull/9" if args[1:3] == ("pr", "create") else ""
+            return real_run(store, *args, check=check, input_text=input_text)
+
+        write.run = fake_run
+        os.environ["DEEPSEEK_API_KEY"] = "k"
+
+    def tearDown(self) -> None:
+        write.run, write.draft_one = self.original
+        os.environ.pop("DEEPSEEK_API_KEY", None)
+        self.tmp.cleanup()
+
+    def item(self, ref: str) -> dict:
+        return {"pr": ref, "url": "https://x", "title": ref, "behavior": "b"}
+
+    def test_sequential_units_and_append(self) -> None:
+        seen = []
+
+        def fake_draft(item, unit, specs, key, model):
+            seen.append(specs["cap"])
+            scenarios = {"o/d#1": ("场景甲",), "o/d#2": ("场景甲", "场景乙"), "o/d#3": ("场景甲", "场景乙", "场景丙")}[item["pr"]]
+            return {"title": item["pr"], "summary": "s", "deltas": [{"capability": "cap", "purpose": "", "markdown": self.modified(*scenarios)}]}
+
+        write.draft_one = fake_draft
+        args = type("A", (), {"base": "main"})()
+        now = dt.datetime(2026, 10, 25, 8, 0, tzinfo=dt.timezone.utc)
+        lines, fallbacks = write.apply_patch_rollup(self.root, args, [self.item("o/d#1"), self.item("o/d#2")], {}, None, now)
+        self.assertEqual(fallbacks, [])
+        self.assertEqual(len(lines), 2)
+        self.assertIn("场景甲", seen[1])  # 第二个单元基于第一个补登后的主 spec 起草
+        create = [c for c in self.gh_calls if c[0][1:3] == ("pr", "create")][0]
+        self.assertIn("obs:patch", create[0])
+        self.assertIn('"prs": ["o/d#1", "o/d#2"]', create[1])
+
+        # 主分支前进后追加：汇总分支重放到最新主分支，新单元追加到原 PR
+        git(self.root, "checkout", "-q", "main")
+        write_file(self.root, "openspec/specs/other/spec.md", "x")
+        git(self.root, "add", "-A"); git(self.root, "commit", "-qm", "main moves"); git(self.root, "push", "-q", "origin", "main")
+        self.gh_calls.clear()
+        patch_pr = {"number": 9, "url": "u9", "branch": "obs/patch-202610250800", "prs": ["o/d#1", "o/d#2"]}
+        lines, _ = write.apply_patch_rollup(self.root, args, [self.item("o/d#3")], {}, patch_pr, now)
+        self.assertEqual(len(lines), 1)
+        spec = (self.root / "openspec/specs/cap/spec.md").read_text(encoding="utf-8")
+        for name in ("场景甲", "场景乙", "场景丙"):
+            self.assertIn(name, spec)
+        self.assertTrue((self.root / "openspec/specs/other/spec.md").is_file())
+        edit = [c for c in self.gh_calls if c[0][1:3] == ("pr", "edit")][0]
+        self.assertIn('"prs": ["o/d#1", "o/d#2", "o/d#3"]', edit[1])
+        self.assertEqual(edit[1].count("openspec-obs"), 1)
+        self.assertTrue(any(c[0][1:4] == ("pr", "ready", "9") for c in self.gh_calls))
+        log = subprocess.run(["git", "log", "--format=%s", "origin/main..HEAD"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertEqual(log.count("obs: 补登"), 3)
+
+    def test_failed_unit_falls_back(self) -> None:
+        write.draft_one = lambda item, unit, specs, key, model: {"error": "模型没有选出需要更新的能力"}
+        args = type("A", (), {"base": "main"})()
+        lines, fallbacks = write.apply_patch_rollup(self.root, args, [self.item("o/d#1")], {}, None,
+                                                    dt.datetime(2026, 10, 25, tzinfo=dt.timezone.utc))
+        self.assertEqual(lines, [])
+        self.assertEqual([f[1] for f in fallbacks], ["模型没有选出需要更新的能力"])
+        self.assertEqual(self.gh_calls, [])
 
 
 class RestoreEntryKeysTest(unittest.TestCase):

@@ -393,6 +393,10 @@ def main() -> int:
         "merged": merged_items,
         "rejected": rejected,
         "open_drafts": open_drafts,
+        # 打开中的补登汇总 PR：未登记变化追加到它的分支（同一时间只用一个，取编号最大的）
+        "patch_pr": max(({"number": p["number"], "url": p["url"], "branch": p["branch"], "prs": p["marker"].get("prs") or []}
+                         for p in obs_prs if p["state"] == "open" and "obs:patch" in p["labels"]),
+                        key=lambda p: p["number"], default=None),
     }
     (out / "input.json").write_text(json.dumps(input_data, ensure_ascii=False, indent=2))
     (out / "signals.json").write_text(

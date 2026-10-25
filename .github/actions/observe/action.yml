@@ -109,18 +109,12 @@ runs:
           --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
           --out "$RUNNER_TEMP/openspec-obs/out/result.json"
 
-    - name: Draft spec updates for unregistered changes
-      if: steps.prepare.outputs.to-match != '0'
+    - name: Install OpenSpec CLI
+      if: steps.prepare.outputs.to-match != '0' && inputs.dry-run != 'true'
       shell: bash
-      env:
-        DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
-        DEEPSEEK_MODEL: ${{ inputs.model }}
       run: |
-        python3 "${{ github.action_path }}/draft.py" --store . \
-          --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
-          --result "$RUNNER_TEMP/openspec-obs/out/result.json" \
-          --out "$RUNNER_TEMP/openspec-obs/out/drafts.json"
-        if jq -e 'to_entries | any(.value.deltas)' "$RUNNER_TEMP/openspec-obs/out/drafts.json" >/dev/null && [ "${{ inputs.dry-run }}" != "true" ]; then
+        # 只有需要补登未登记的行为变化时才用到（把 delta 并入主 spec）
+        if jq -e '(.unregistered // []) | length > 0' "$RUNNER_TEMP/openspec-obs/out/result.json" >/dev/null 2>&1; then
           npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
           openspec --version
         fi
@@ -131,6 +125,8 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.store-token }}
         OPENSPEC_TELEMETRY: '0'
+        DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
+        DEEPSEEK_MODEL: ${{ inputs.model }}
       run: |
         DRY=""; [ "${{ inputs.dry-run }}" = "true" ] && DRY="--dry-run"
         python3 "${{ github.action_path }}/write.py" \
@@ -139,7 +135,6 @@ runs:
           --input "$RUNNER_TEMP/openspec-obs/out/input.json" \
           --result "$RUNNER_TEMP/openspec-obs/out/result.json" \
           --state "$RUNNER_TEMP/openspec-obs/state/state.json" \
-          --drafts "$RUNNER_TEMP/openspec-obs/out/drafts.json" \
           --report "$RUNNER_TEMP/openspec-obs/out/report.md" $DRY
 
     - name: Save observe state

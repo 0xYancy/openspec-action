@@ -2,13 +2,14 @@
 """实现观察的受限写入步骤：校验 模型结论，只在 Store 开或更新草稿 PR。
 
 用法：python3 write.py --store <dir> --store-repo <owner/repo> --base <主分支> --input <input.json>
-                       --result <result.json> --state <state.json> --report <report.md> [--drafts <drafts.json>] [--dry-run]
+                       --result <result.json> --state <state.json> --report <report.md> [--dry-run]
 
-环境变量：GH_TOKEN（Store 的 GITHUB_TOKEN，只用于 git push 与 gh pr）
+环境变量：GH_TOKEN（Store 的 GITHUB_TOKEN，只用于 git push 与 gh pr）；
+         DEEPSEEK_API_KEY / DEEPSEEK_MODEL（为未登记的行为变化起草主 spec 改动）
 
 - 只修改 openspec/changes/** 与 openspec/specs/**；任何其他路径的改动都会被撤销并在报告中列出。
-- 未登记的行为变化有起草结果（drafts.json）时，delta 直接并入主 spec 并写 changelog，PR 中不含 change；
-  否则退回预置空壳补登 change 的 PR。
+- 未登记的行为变化写进 Store 唯一打开的补登汇总 PR（obs:patch）：按顺序基于汇总分支当前的主 spec 起草，
+  delta 直接并入主 spec 并写 changelog，每个单元一个提交，PR 中不含 change；起草失败的单元单独开空壳补登 PR。
 - 从不合并 PR，从不推送主分支。
 """
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -27,10 +29,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "archive"))
 from store_lib import dump_yaml, guarded_paths, load_yaml, parse_marker, render_marker, revert_paths  # noqa: E402
 from archive import TBD_PURPOSE, changelog_path, delta_summary  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from draft import draft_one, load_capabilities  # noqa: E402
+
 LABEL = "obs"
 REJECTED_LABEL = "obs:rejected"
 ARCHIVE_LABEL = "obs:archive"
 REDO_LABEL = "obs:redo"
+PATCH_LABEL = "obs:patch"
 
 
 def run(store: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
@@ -128,23 +134,28 @@ def unregistered_body(item: dict, fallback_reason: str = "") -> str:
 """
 
 
-def patch_body(item: dict, draft: dict, summaries: dict[str, list[str]]) -> str:
-    specs = "\n\n".join(f"**{cap}**\n" + "\n".join(lines) for cap, lines in summaries.items())
-    return f"""## 摘要
-[{item['pr']}]({item['url']}) {item['title']} 改变了产品行为，但没有关联到任何已批准的 change。本 PR 已按该实现直接更新主 spec，不经过 change 流程，也不进 Notion；合并即生效。
-
-## 被改变的行为
-{item['behavior']}
-
-## 主 spec 改动
-{draft.get('summary') or ''}
-
-{specs}
-
+def patch_header(note: str = "") -> str:
+    return f"""## 补登汇总
+实现观察发现以下实现改变了产品行为，但没有关联到任何已批准的 change。本 PR 已按这些实现直接更新主 spec，每个实现单元一个提交；不经过 change 流程，也不进 Notion，合并即生效。
+{chr(10) + note + chr(10) if note else ""}
 ## 审阅提示
 - 在 Files changed 中核对主 spec 的改动是否与已上线的行为一致；需要调整时直接在本分支修改 `openspec/specs/`。
-- 确认后点击 Ready for review 运行 Store 检查，通过后合并。
-- 这是已知行为或不需要写进规范时，关闭本 PR 并加上 `{REJECTED_LABEL}` 标签。
+- 某个单元不需要写进规范时，在本分支回退它对应的提交，之后不会再提出。
+- 整个 PR 都不需要时，关闭并加上 `{REJECTED_LABEL}` 标签。
+- 之后的观察会继续追加到本 PR；追加时若本 PR 已标记就绪，会改回草稿，确认后重新点击 Ready for review。
+
+## 补登
+"""
+
+
+def unit_section(item: dict, draft: dict, summaries: dict[str, list[str]]) -> str:
+    specs = "\n".join(f"- **{cap}**：" + "；".join(line.lstrip("- ") for line in lines) for cap, lines in summaries.items())
+    return f"""
+### [{item['pr']}]({item['url']}) {draft.get('title') or item['title']}
+**被改变的行为**：{item['behavior']}
+
+**主 spec 改动**：{draft.get('summary') or ''}
+{specs}
 """
 
 
@@ -189,7 +200,8 @@ def merge_draft(store: Path, item: dict, draft: dict, now: dt.datetime) -> tuple
 def ensure_labels(store: Path) -> None:
     for name, color, desc in ((LABEL, "0e8a16", "实现观察起草的 PR"), (REJECTED_LABEL, "b60205", "需求侧拒绝的观察匹配"),
                               (ARCHIVE_LABEL, "5319e7", "合并本 PR 时直接完成验收归档"),
-                              (REDO_LABEL, "fbca04", "关闭后按当前流程重新观察其中的实现")):
+                              (REDO_LABEL, "fbca04", "关闭后按当前流程重新观察其中的实现"),
+                              (PATCH_LABEL, "1d76db", "补登汇总：未登记的行为变化直接更新主 spec")):
         run(store, "gh", "label", "create", name, "--color", color, "--description", desc, "--force", check=False)
 
 
@@ -299,23 +311,85 @@ def new_change_id(store: Path, now: dt.datetime, used: set[str]) -> str:
             return candidate
 
 
-def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids: set[str], draft: dict | None = None) -> str:
+def prepare_patch_branch(store: Path, args, patch_pr: dict | None, now: dt.datetime) -> tuple[str, dict | None, str]:
+    """检出补登汇总分支：已有汇总 PR 时把它的提交重放到最新主分支上；重放冲突时不动原 PR，另起新分支。
+    返回 (分支, 沿用的汇总 PR 或 None, 说明)。"""
+    fresh = f"obs/patch-{now:%Y%m%d%H%M}"
+    if not patch_pr:
+        start_branch(store, args.base, fresh, False)
+        return fresh, None, ""
+    branch = patch_pr["branch"]
+    run(store, "git", "fetch", "origin", branch)
+    commits = run(store, "git", "rev-list", "--reverse", "--no-merges", f"origin/{args.base}..origin/{branch}").split()
+    run(store, "git", "checkout", "-B", branch, f"origin/{args.base}")
+    for commit in commits:
+        picked = subprocess.run(["git", "cherry-pick", "--keep-redundant-commits", commit], cwd=store, capture_output=True, text=True)
+        if picked.returncode != 0:
+            subprocess.run(["git", "cherry-pick", "--abort"], cwd=store, capture_output=True)
+            start_branch(store, args.base, fresh, False)
+            return fresh, None, (f"> 原补登汇总 PR #{patch_pr['number']} 的提交无法重放到最新主分支（与主分支的改动冲突），"
+                                 "本次补登另开在本 PR。请先处理原 PR。")
+    return branch, patch_pr, ""
+
+
+def apply_patch_rollup(store: Path, args, items: list[dict], units: dict[str, dict], patch_pr: dict | None,
+                       now: dt.datetime) -> tuple[list[str], list[tuple[dict, str]]]:
+    """按顺序把未登记的行为变化补登进汇总分支。返回 (报告行, [(退回空壳补登的单元, 原因)])。"""
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
+    if not key:
+        return [], [(item, "缺少 DEEPSEEK_API_KEY") for item in items]
+    branch, pr, note = prepare_patch_branch(store, args, patch_pr, now)
+    applied, fallbacks = [], []
+    for item in items:
+        try:
+            # 基于汇总分支当前的主 spec 起草：前面单元的补登已经在其中，MODIFIED 不会覆盖它们
+            draft = draft_one(item, units.get(item["pr"]) or {}, load_capabilities(store), key, model)
+        except Exception as error:  # noqa: BLE001 —— 起草失败只退回空壳补登，不中断观察
+            draft = {"error": f"起草失败：{error}"[:300]}
+        reason = draft.get("error", "")
+        if not reason:
+            summaries, reason = merge_draft(store, item, draft, now)
+        if reason:
+            run(store, "git", "reset", "-q", "--hard")
+            run(store, "git", "clean", "-fdq", "--", "openspec")
+            fallbacks.append((item, reason))
+            continue
+        allowed, denied = guarded_paths(store)
+        if denied:
+            revert_paths(store, denied)
+        run(store, "git", "add", "--", *allowed)
+        run(store, "git", "commit", "-m", f"obs: 补登 {item['pr']}：{draft.get('title') or item['title']}"[:120])
+        applied.append((item, draft, summaries))
+    if not applied:
+        return [], fallbacks
+    # obs/* 分支只由自动化写入；重放到最新主分支后需要覆盖
+    run(store, "git", "push", "--force", "origin", f"HEAD:refs/heads/{branch}")
+    sections = "".join(unit_section(item, draft, summaries) for item, draft, summaries in applied)
+    refs = [item["pr"] for item, _, _ in applied]
+    if pr:
+        view = json.loads(run(store, "gh", "pr", "view", str(pr["number"]), "--json", "body,isDraft"))
+        body = re.sub(r"<!--\s*openspec-obs:.*?-->\s*", "", view["body"] or "", flags=re.S).rstrip() + "\n" + sections
+        body += "\n" + render_marker({"change": None, "kind": "patch", "prs": list(pr.get("prs") or []) + refs})
+        run(store, "gh", "pr", "edit", str(pr["number"]), "--body-file", "-", input_text=body)
+        if not view.get("isDraft"):
+            run(store, "gh", "pr", "ready", str(pr["number"]), "--undo")
+            run(store, "gh", "pr", "comment", str(pr["number"]), "--body",
+                f"实现观察追加了 {len(applied)} 条补登，本 PR 已改回草稿；确认新增内容后重新点击 Ready for review。")
+        url = pr["url"]
+    else:
+        body = patch_header(note) + sections + "\n" + render_marker({"change": None, "kind": "patch", "prs": refs})
+        url = run(store, "gh", "pr", "create", "--draft", "--base", args.base, "--head", branch, "--label", LABEL,
+                  "--label", PATCH_LABEL, "--title", f"obs: 补登汇总（{now:%Y-%m-%d} 起）", "--body-file", "-", input_text=body)
+    return [f"- {item['pr']} → {url}（补登汇总，已更新主 spec：{'、'.join(summaries)}）" for item, _, summaries in applied], fallbacks
+
+
+def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids: set[str], reason: str) -> str:
+    """起草失败的未登记变化：单独开预置空壳补登 change 的 PR。"""
     repo = ref_repo(item["pr"])
     name = f"obs-{repo.split('/')[1].lower()}-{ref_suffix(item['pr'])}"
     branch = f"obs/{name}"
     start_branch(store, args.base, branch, False)
-    reason = (draft or {}).get("error") or ("" if draft else "没有起草结果")
-    if not reason:
-        summaries, reason = merge_draft(store, item, draft, now)
-        if not reason:
-            denied = commit_and_push(store, branch, f"obs: 补登 {item['pr']} 到主 spec")
-            body = patch_body(item, draft, summaries) + "\n" + render_marker({"change": None, "prs": [item["pr"]]})
-            url = run(store, "gh", "pr", "create", "--draft", "--base", args.base, "--head", branch, "--label", LABEL,
-                      "--title", f"obs: 补登 {item['pr']}：{draft.get('title') or item['title']}"[:120], "--body-file", "-", input_text=body)
-            return f"- {item['pr']} → {url}（已更新主 spec：{'、'.join(summaries)}）" + (f"（已拒绝写入：{', '.join(denied)}）" if denied else "")
-        # 退回空壳补登前清掉合并失败留下的改动
-        run(store, "git", "reset", "-q", "--hard")
-        run(store, "git", "clean", "-fdq", "--", "openspec")
     directory = store / "openspec" / "changes" / name
     directory.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -354,7 +428,6 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     for name in ("--store", "--store-repo", "--base", "--input", "--result", "--state", "--report"):
         parser.add_argument(name, required=True)
-    parser.add_argument("--drafts", default="")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -366,8 +439,6 @@ def main() -> int:
     state = json.loads(state_path.read_text()) if state_path.is_file() else {"repos": {}}
     now = dt.datetime.now(dt.timezone.utc)
 
-    drafts_path = Path(args.drafts) if args.drafts else None
-    drafts = json.loads(drafts_path.read_text()) if drafts_path and drafts_path.is_file() else {}
     checked, notes = validate(result, data)
     changes = {c["change"]: c for c in data["changes"]}
 
@@ -383,10 +454,8 @@ def main() -> int:
             target = "（未合并，将在其 PR 评论）" if changes[link["change"]].get("draft_pr") else ""
             lines.append(f"- 将关联 `{link['change']}`{target}：" + "、".join(f"{p['pr']}（{p['confidence']}，{p['basis']}）" for p in link["prs"]))
             lines += [f"  - 差异：{d['scenario']}（{d['pr']}）{d['detail']}" for d in link["diffs"]]
-        for u in checked["unregistered"]:
-            draft = drafts.get(u["pr"]) or {}
-            plan = f"更新主 spec {'、'.join(d['capability'] for d in draft['deltas'])}" if draft.get("deltas") else f"空壳补登（{draft.get('error') or '没有起草结果'}）"
-            lines.append(f"- 将起草未登记行为变化：{u['pr']}：{u['behavior']} → {plan}")
+        target = f"追加到补登汇总 PR #{data['patch_pr']['number']}" if data.get("patch_pr") else "新开补登汇总 PR"
+        lines += [f"- 将补登未登记行为变化（{target}）：{u['pr']}：{u['behavior']}" for u in checked["unregistered"]]
     else:
         if checked["links"] or checked["unregistered"]:
             run(store, "git", "config", "user.name", "github-actions[bot]")
@@ -402,10 +471,18 @@ def main() -> int:
                     lines.append(apply_link(store, args, change, link, data["open_drafts"].get(link["change"]), now))
             except subprocess.CalledProcessError as error:
                 lines.append(f"- `{link['change']}` 写入失败：{(error.stderr or '').strip()[:300]}")
-        used_ids: set[str] = set()
-        for item in checked["unregistered"]:
+        fallbacks: list[tuple[dict, str]] = []
+        if checked["unregistered"]:
+            units = {u["pr"]: u for u in data.get("merged") or []}
             try:
-                lines.append(apply_unregistered(store, args, item, now, used_ids, drafts.get(item["pr"])))
+                rollup, fallbacks = apply_patch_rollup(store, args, checked["unregistered"], units, data.get("patch_pr"), now)
+                lines += rollup
+            except subprocess.CalledProcessError as error:
+                lines.append(f"- 补登汇总写入失败：{(error.stderr or '').strip()[:300]}")
+        used_ids: set[str] = set()
+        for item, reason in fallbacks:
+            try:
+                lines.append(apply_unregistered(store, args, item, now, used_ids, reason))
             except subprocess.CalledProcessError as error:
                 lines.append(f"- {item['pr']} 写入失败：{(error.stderr or '').strip()[:300]}")
     lines += [f"- 无需起草：{n['pr']}（{n['reason']}）" for n in checked["no_draft"]]

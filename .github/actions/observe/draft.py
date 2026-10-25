@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
-"""实现观察的起草步骤：为每个未登记的行为变化，让 DeepSeek 写出要并入主 spec 的 delta。
+"""实现观察的补登起草：为一个未登记的行为变化，让 DeepSeek 写出要并入主 spec 的 delta。由 write.py 按单元顺序调用。
 
-用法：python3 draft.py --store <dir> --input <input.json> --result <result.json> --out <drafts.json>
-
-环境变量：DEEPSEEK_API_KEY（必需）、DEEPSEEK_MODEL（可选）
-
-分两步调用：先从现有能力中选出受影响的能力（可以是新能力），再基于这些能力的完整主 spec 与实现 diff 起草 delta。
-只做形状校验；delta 能否合并、合并后能否通过严格校验由 write.py 负责。任何一步失败只记下原因，write.py 会退回空壳补登。
+分两步调用：先从现有能力中选出受影响的能力（可以是新能力），再基于这些能力的完整主 spec 与实现 diff 起草 delta；
+校验不通过时带上原因重写一次。delta 能否合并、合并后能否通过严格校验由 write.py 负责。
 """
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -135,35 +129,3 @@ def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, m
         "deltas": [{"capability": d["capability"], "purpose": str(d.get("purpose") or "") if d["capability"] in new else "",
                     "markdown": str(d["markdown"]).strip() + "\n"} for d in draft["deltas"]],
     }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    for name in ("--store", "--input", "--result", "--out"):
-        parser.add_argument(name, required=True)
-    args = parser.parse_args()
-
-    result_path = Path(args.result)
-    result = json.loads(result_path.read_text()) if result_path.is_file() and result_path.read_text().strip() else {}
-    items = result.get("unregistered") or []
-    drafts: dict[str, dict] = {}
-    if items:
-        key = os.environ.get("DEEPSEEK_API_KEY", "")
-        model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
-        units = {u["pr"]: u for u in json.loads(Path(args.input).read_text(encoding="utf-8")).get("merged") or []}
-        existing_text = load_capabilities(Path(args.store))
-        for item in items:
-            ref = item.get("pr")
-            if ref not in units:
-                continue
-            try:
-                drafts[ref] = draft_one(item, units[ref], existing_text, key, model) if key else {"error": "缺少 DEEPSEEK_API_KEY"}
-            except Exception as error:  # noqa: BLE001 —— 任何失败都退回空壳补登，不中断观察
-                drafts[ref] = {"error": f"起草失败：{error}"[:300]}
-            print(f"{ref}：{drafts[ref].get('error') or '已起草 ' + '、'.join(d['capability'] for d in drafts[ref]['deltas'])}")
-    Path(args.out).write_text(json.dumps(drafts, ensure_ascii=False, indent=2), encoding="utf-8")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
