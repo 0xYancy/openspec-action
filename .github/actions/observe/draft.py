@@ -96,6 +96,21 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
     return ""
 
 
+def widen(draft: dict, existing_text: dict[str, str], specs: dict[str, str], new: set[str]) -> list[str]:
+    """delta 指向未选定的能力时一并纳入：现有能力补上其主 spec 参与校验，不存在的按新能力处理。返回新纳入的现有能力。"""
+    added = []
+    for delta in draft.get("deltas") or []:
+        name = str(delta.get("capability") or "") if isinstance(delta, dict) else ""
+        if not CAPABILITY.match(name) or name in specs or name in new:
+            continue
+        if name in existing_text:
+            specs[name] = existing_text[name]
+            added.append(name)
+        else:
+            new.add(name)
+    return added
+
+
 def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, model: str) -> dict:
     selected, _ = ask("draft_select.md", {
         "unit": unit_view(unit),
@@ -115,11 +130,14 @@ def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, m
         "specs": specs,
         "new_capabilities": sorted(new),
     }, key, model)
+    added = widen(draft, existing_text, specs, new)
     reason = check_draft(draft, specs, new)
     if reason:
-        # 带上校验原因让模型重写一次
-        retry = history + [{"role": "user", "content": f"上次输出不合法：{reason}。请修正后重新输出完整的 JSON 对象。"}]
+        # 带上校验原因让模型重写一次；新纳入的现有能力之前没给过主 spec，这次一并提供
+        extra = f"\n\n以下是你改动到的其他现有能力的完整主 spec：\n{json.dumps({n: specs[n] for n in added}, ensure_ascii=False, indent=2)}" if added else ""
+        retry = history + [{"role": "user", "content": f"上次输出不合法：{reason}。请修正后重新输出完整的 JSON 对象。{extra}"}]
         draft, _ = ask("draft_write.md", {}, key, model, retry)
+        widen(draft, existing_text, specs, new)
         reason = check_draft(draft, specs, new)
         if reason:
             return {"error": f"重写后仍不合法：{reason}"}

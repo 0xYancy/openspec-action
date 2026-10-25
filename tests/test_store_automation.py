@@ -382,6 +382,29 @@ class PatchDraftTest(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertIn("漏掉了原有场景", sent[-1][-1]["content"])
 
+    def test_draft_widens_to_unselected_capabilities(self) -> None:
+        other = self.SPEC.replace("cap Specification", "other Specification")
+        purpose = "定义一个新的界面规范能力，说明设计系统中颜色、字号与间距的取值规则，以及各页面引用这些取值时需要遵守的约束。"
+        added = "## ADDED Requirements\n\n### Requirement: R\nx SHALL y\n\n#### Scenario: S\n- **当** a\n- **则** b\n"
+        bad = {"title": "t", "summary": "s", "deltas": [
+            {"capability": "other", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n"},
+            {"capability": "fresh-cap", "purpose": purpose, "markdown": added}]}
+        good = {"title": "t", "summary": "s", "deltas": [
+            {"capability": "other", "markdown": PatchRollupTest.modified()},
+            {"capability": "fresh-cap", "purpose": purpose, "markdown": added}]}
+        replies = iter([{"capabilities": [{"name": "cap"}]}, bad, good])
+        sent = []
+        original = draft.call
+        draft.call = lambda messages, key, model: (sent.append(messages), json.dumps(next(replies), ensure_ascii=False))[1]
+        try:
+            result = draft.draft_one({"behavior": "b"}, {"pr": "o/d#1"}, {"cap": self.SPEC, "other": other}, "k", "m")
+        finally:
+            draft.call = original
+        self.assertNotIn("error", result)
+        self.assertEqual([d["capability"] for d in result["deltas"]], ["other", "fresh-cap"])
+        self.assertEqual(result["deltas"][1]["purpose"], purpose)
+        self.assertIn("other Specification", sent[-1][-1]["content"])  # 重写时提供了新纳入能力的主 spec
+
     def test_merge_draft_updates_main_spec_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
