@@ -227,6 +227,24 @@ class DedupeTest(unittest.TestCase):
         self.assertEqual(drafts["tvl"]["branch"], "obs/10")
 
 
+class CoveredCommitsTest(unittest.TestCase):
+    def commits(self, *shas: str) -> list[dict]:
+        return [{"sha": s * 40, "commit": {"committer": {"date": "2026-10-13T06:00:00Z"}}} for s in shas]
+
+    def test_range_cut_by_lookback_still_covered(self) -> None:
+        # 之前补登的是 a..f，这次回看只看到 c..f 和当天之后的 g
+        commits = self.commits("c", "d", "e", "f", "g")
+        covered = prepare.covered_shas("o/dapp", commits, {"o/dapp@" + "a" * 7 + ".." + "f" * 7})
+        self.assertEqual(covered, {s * 40 for s in "cdef"})
+        batches = prepare.commit_batches(commits, covered)
+        self.assertEqual([[c["sha"][0] for c in b] for b in batches], [["g"]])
+
+    def test_single_and_other_repo(self) -> None:
+        commits = self.commits("a", "b")
+        refs = {"o/dapp@" + "b" * 7, "o/other@" + "a" * 7, "o/dapp#3"}
+        self.assertEqual(prepare.covered_shas("o/dapp", commits, refs), {"b" * 40})
+
+
 class StoreCheckTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

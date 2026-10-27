@@ -8,11 +8,12 @@
   ORG_TOKENS    app_token.py 的输出 JSON（各组织只读 token 与被跳过的组织）
   LOOKBACK_DAYS 没有位置记录时回看的天数，默认 14
 
+新的位置记录（只前移读取成功的仓库）写回 --state，由 action 缓存供下次运行使用。
+
 产出（--out 目录）：
   input.json    模型输入：候选 change、待匹配的实现单元（已合并 PR 与直接推送的提交批次）
   signals.json  进行中信号：打开中的 PR 与其推断关联的 change
   summary.json  运行摘要：各仓库读取结果、被跳过的组织、待匹配数量
-  state.json    新的位置记录（只前移读取成功的仓库）
 """
 from __future__ import annotations
 
@@ -157,6 +158,27 @@ def fetch_commits(repo: str, branch: str, token: str, since: dt.datetime) -> lis
         if len(items) < 100:
             break
     return sorted(commits, key=lambda c: c["commit"]["committer"]["date"])
+
+
+def covered_shas(repo: str, commits: list[dict], refs: set[str]) -> set[str]:
+    """已被处理过的实现单元覆盖的提交。
+
+    直接推送单元的标识是区间 `repo@首..尾`，回看起点不同时同一批提交会被截成不同区间，
+    所以按提交判断：区间两端都在本次提交列表中时覆盖两端之间的全部提交；起点早于本次列表时从列表开头算起。
+    """
+    index = {c["sha"][:7]: i for i, c in enumerate(commits)}
+    covered: set[str] = set()
+    for ref in refs:
+        if not ref.startswith(f"{repo}@"):
+            continue
+        first, _, last = ref[len(repo) + 1:].partition("..")
+        last = last or first
+        if last in index:
+            start = index.get(first, 0)
+            covered.update(c["sha"] for c in commits[start:index[last] + 1])
+        elif first in index:
+            covered.add(commits[index[first]]["sha"])
+    return covered
 
 
 def commit_batches(commits: list[dict], pr_shas: set[str]) -> list[list[dict]]:
@@ -325,7 +347,10 @@ def main() -> int:
             # 不经 PR 直接推送到观察分支的提交
             pr_shas = fetch_pr_shas(slug, merged, token)
             direct = 0
-            for batch in commit_batches(fetch_commits(slug, repo["branch"], token, since), pr_shas):
+            commits = fetch_commits(slug, repo["branch"], token, since)
+            # 已处理过的提交与 PR 的提交一样切断分组，只有未覆盖的提交组成新的实现单元
+            covered = covered_shas(slug, commits, handled | set(entry.get("technical") or []))
+            for batch in commit_batches(commits, pr_shas | covered):
                 ref = batch_ref(slug, batch)
                 if ref in handled or ref in (entry.get("technical") or []):
                     continue
@@ -405,7 +430,8 @@ def main() -> int:
     (out / "summary.json").write_text(
         json.dumps({"repos": repo_results, "skipped_orgs": skipped_orgs, "to_match": len(merged_items), "signals": len(signals)}, ensure_ascii=False, indent=2)
     )
-    (out / "state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
     print(json.dumps({"to_match": len(merged_items), "signals": len(signals), "repos": len(repo_results), "draft_candidates": len(draft_changes)}))
     return 0
 
