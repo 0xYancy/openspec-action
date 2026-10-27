@@ -1,5 +1,5 @@
 name: 'OpenSpec Store Wiki Sync'
-description: '非交互整理 Store 的产品 wiki：只索引本 Store → Agent 撰写待更新页面 → 结构与出处门槛 → 发布文件写入 Store 草稿 PR（已有则更新）→ Vercel 预览'
+description: '非交互整理 Store 的产品 wiki（定时运行时草稿 PR 未合并且无新变化则跳过）：只索引本 Store → Agent 撰写待更新页面 → 结构与出处门槛 → 发布文件写入 Store 草稿 PR（已有则更新）→ Vercel 预览'
 author: '0xYancy'
 
 inputs:
@@ -69,8 +69,25 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Skip unchanged scheduled run
+      id: gate
+      if: github.event_name == 'schedule'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+      run: |
+        # 定时运行：草稿 PR 未合并，且它生成之后主分支的规范、归档与 wiki 都没变化时，不再重复重写页面。
+        if [ -z "$(gh pr list --head wiki/sync --state open --json number -q '.[].number')" ]; then exit 0; fi
+        git fetch --quiet origin wiki/sync
+        BASE=$(git merge-base FETCH_HEAD HEAD)
+        if git diff --quiet "$BASE" HEAD -- openspec/specs openspec/changes/archive wiki; then
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "wiki 草稿 PR 尚未合并，且之后主分支没有相关变化，跳过本次定时整理。" | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+
     - name: Prepare store facts
       id: facts
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       run: |
         python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
@@ -92,6 +109,7 @@ runs:
 
     - name: Exchange read-only tokens
       id: tokens
+      if: steps.gate.outputs.skip != 'true'
       uses: 0xYancy/openspec-action/.github/actions/org-tokens@main
       with:
         orgs: ${{ steps.facts.outputs.orgs }}
@@ -101,6 +119,7 @@ runs:
         read-token: ${{ inputs.read-token }}
 
     - name: Checkout knowledge hub tools
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       run: |
         W="${{ steps.facts.outputs.dir }}"
@@ -111,6 +130,7 @@ runs:
         cd "$W/hub/knowledge-hub" && npm ci --silent
 
     - name: Index this store
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       env:
         KNOWLEDGE_SNAPSHOT_DIR: ${{ steps.facts.outputs.dir }}/snapshot
@@ -129,6 +149,7 @@ runs:
 
     - name: Find pages to update
       id: status
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       env:
         KNOWLEDGE_SNAPSHOT_DIR: ${{ steps.facts.outputs.dir }}/snapshot
@@ -327,7 +348,7 @@ runs:
         exit 1
 
     - name: Summary
-      if: always()
+      if: always() && steps.gate.outputs.skip != 'true'
       shell: bash
       run: |
         W="${{ steps.facts.outputs.dir }}"
