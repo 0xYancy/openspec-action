@@ -361,7 +361,8 @@ class PatchDraftTest(unittest.TestCase):
         self.assertIn("不存在", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 无此需求\n"}]}, specs, set()))
         self.assertIn("ADDED / MODIFIED", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## REMOVED Requirements\n"}]}, specs, set()))
         self.assertIn("未选定", draft.check_draft({"deltas": [{"capability": "other", "markdown": "## ADDED Requirements\n"}]}, specs, set()))
-        self.assertIn("Purpose", draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "短", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}))
+        self.assertIn("Purpose", draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "  ", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}))
+        self.assertEqual(draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "负责质押入口。", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}), "")
         self.assertIn("没有给出", draft.check_draft({"deltas": []}, specs, set()))
         dropped = {"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 新场景\n- **当** a\n- **则** b\n"}]}
         self.assertIn("漏掉了原有场景：提交赎回", draft.check_draft(dropped, specs, set()))
@@ -457,6 +458,30 @@ class PatchDraftTest(unittest.TestCase):
             _, reason = write.merge_draft(root, item, bad, dt.datetime(2026, 10, 25, tzinfo=dt.timezone.utc))
             self.assertTrue(reason)
             self.assertFalse((root / "openspec/changes/obs-patch-9").exists())
+
+
+class StrictSpecTest(unittest.TestCase):
+    """Purpose 偏短只提醒；为空、占位或其他严格问题照常失败。需要本机有 openspec CLI。"""
+
+    def run_case(self, purpose: str, scenario: bool = True) -> tuple[bool, list[str], list[str]]:
+        import strict_spec
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_file(root, "openspec/config.yaml", "schema: spec-driven\n")
+            body = "\n#### Scenario: 打开页面\n- **WHEN** 打开\n- **THEN** 展示\n" if scenario else ""
+            write_file(root, "openspec/specs/demo/spec.md",
+                       f"# demo\n\n## Purpose\n{purpose}\n\n## Requirements\n\n### Requirement: 展示仓位\n系统 SHALL 展示仓位。\n{body}")
+            return strict_spec.check("demo", tmp)
+
+    def test_brief_purpose_is_note(self) -> None:
+        ok, failures, notes = self.run_case("负责质押入口与仓位展示。")
+        self.assertTrue(ok, failures)
+        self.assertEqual(len(notes), 1)
+
+    def test_empty_placeholder_and_other_warnings_fail(self) -> None:
+        self.assertFalse(self.run_case("")[0])
+        self.assertFalse(self.run_case("TBD")[0])
+        self.assertFalse(self.run_case("负责质押入口与仓位展示。", scenario=False)[0])
 
 
 class PatchRollupTest(unittest.TestCase):

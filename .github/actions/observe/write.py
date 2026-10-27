@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "archive"))
 from store_lib import dump_yaml, guarded_paths, load_yaml, parse_marker, render_marker, revert_paths  # noqa: E402
 from archive import TBD_PURPOSE, changelog_path, delta_summary  # noqa: E402
+from strict_spec import check as strict_check  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from draft import draft_one, load_capabilities  # noqa: E402
@@ -191,9 +192,9 @@ def merge_draft(store: Path, item: dict, draft: dict, now: dt.datetime) -> tuple
                  f"**操作**：实现观察补登（{item['url']}）\n"
                  "**摘要**：\n" + "\n".join(summaries[capability]) + "\n")
         path.write_text(text.rstrip("\n") + "\n" + entry, encoding="utf-8")
-        check = subprocess.run(["openspec", "validate", capability, "--type", "spec", "--strict"], cwd=store, capture_output=True, text=True)
-        if check.returncode != 0:
-            return summaries, f"`{capability}` 合并后未通过严格校验：" + (check.stdout + check.stderr).strip()[-300:]
+        ok, failures, _ = strict_check(capability, str(store))
+        if not ok:
+            return summaries, f"`{capability}` 合并后未通过严格校验：" + "；".join(failures)[-300:]
     return summaries, ""
 
 

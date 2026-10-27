@@ -43,7 +43,8 @@ runs:
         for s in $SPECS; do
           [ -f "openspec/specs/$s/spec.md" ] || continue
           echo "--- strict: spec $s" >> "$OUT"
-          openspec validate "$s" --type spec --strict >> "$OUT" 2>&1 || FAIL=1
+          # Purpose 少于 50 个字符只作提醒（中文常常不足 50 个字符），其余严格校验问题照常失败
+          python3 "${{ github.action_path }}/../shared/strict_spec.py" "$s" >> "$OUT" 2>&1 || FAIL=1
         done
         for c in $CHANGES; do
           [ -d "openspec/changes/$c" ] || continue
@@ -52,6 +53,7 @@ runs:
         done
         if [ "$FAIL" = 0 ]; then
           echo "### openspec validate 通过（全部普通校验；本次改动的规范与 change 为 --strict）" >> "$GITHUB_STEP_SUMMARY"
+          grep '^提醒：' "$OUT" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
         else
           { echo "### openspec validate 未通过"; echo; echo '```'; tail -60 "$OUT"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           cat "$OUT"

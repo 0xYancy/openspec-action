@@ -80,8 +80,8 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
         sections = set(DELTA_SECTION.findall(markdown))
         if not sections or sections - {"ADDED", "MODIFIED"}:
             return f"`{name}` 的 delta 只能包含 ADDED / MODIFIED Requirements"
-        if name in new and ("MODIFIED" in sections or len(str(delta.get("purpose") or "")) < 50):
-            return f"新能力 `{name}` 只能新增需求，且 Purpose 不少于 50 个字符"
+        if name in new and ("MODIFIED" in sections or not str(delta.get("purpose") or "").strip()):
+            return f"新能力 `{name}` 只能新增需求，且必须写出 Purpose"
         if name in existing:
             current = requirement_blocks(specs[name])
             modified = requirement_blocks(delta_sections(markdown).get("MODIFIED", ""))
