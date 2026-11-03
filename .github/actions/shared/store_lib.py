@@ -17,7 +17,7 @@ import yaml
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 
 # 自动化只允许写入这些路径；其余（workflow、CODEOWNERS、框架文件、身份文件）一律拒绝。
-WRITE_ALLOW = ["openspec/changes/**", "openspec/specs/**", "wiki/**"]
+WRITE_ALLOW = ["openspec/changes/**", "openspec/specs/**", "openspec/observations/*.json", "wiki/**"]
 WRITE_DENY = [".github/**", ".openspec-store/**", "openspec/schemas/**", "openspec/framework.lock", "openspec/repos.yaml", ".claude/**", ".agents/**"]
 
 MARKER = re.compile(r"<!--\s*openspec-obs:\s*(\{.*?\})\s*-->", re.S)

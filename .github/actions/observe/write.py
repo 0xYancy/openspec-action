@@ -31,6 +31,7 @@ from archive import TBD_PURPOSE, changelog_path, delta_summary  # noqa: E402
 from strict_spec import check as strict_check  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backfill import materialize, preflight, save_record
 from draft import draft_one, load_capabilities  # noqa: E402
 
 LABEL = "obs"
@@ -142,6 +143,7 @@ def patch_header(note: str = "") -> str:
 ## 审阅提示
 - 在 Files changed 中核对主 spec 的改动是否与已上线的行为一致；需要调整时直接在本分支修改 `openspec/specs/`。
 - 某个单元不需要写进规范时，在本分支回退它对应的提交，之后不会再提出。
+- 加 `obs:as-change` 可把本汇总整体转成一个完整 Change；`obs:as-spec` 可转回主 spec。
 - 整个 PR 都不需要时，关闭并加上 `{REJECTED_LABEL}` 标签。
 - 之后的观察会继续追加到本 PR；追加时若本 PR 已标记就绪，会改回草稿，确认后重新点击 Ready for review。
 
@@ -156,6 +158,8 @@ def unit_section(item: dict, draft: dict, summaries: dict[str, list[str]]) -> st
 **被改变的行为**：{item['behavior']}
 
 **主 spec 改动**：{draft.get('summary') or ''}
+
+**默认判断**：{draft.get('mode_reason') or '已有能力的小范围规则补正'}
 {specs}
 """
 
@@ -202,7 +206,10 @@ def ensure_labels(store: Path) -> None:
     for name, color, desc in ((LABEL, "0e8a16", "实现观察起草的 PR"), (REJECTED_LABEL, "b60205", "需求侧拒绝的观察匹配"),
                               (ARCHIVE_LABEL, "5319e7", "合并本 PR 时直接完成验收归档"),
                               (REDO_LABEL, "fbca04", "关闭后按当前流程重新观察其中的实现"),
-                              (PATCH_LABEL, "1d76db", "补登汇总：未登记的行为变化直接更新主 spec")):
+                              (PATCH_LABEL, "1d76db", "补登汇总：未登记的行为变化直接更新主 spec"),
+                              ("obs:change", "5319e7", "完整补登 Change"),
+                              ("obs:as-change", "5319e7", "转换为完整补登 Change"),
+                              ("obs:as-spec", "1d76db", "转换为直接更新主 spec")):
         run(store, "gh", "label", "create", name, "--color", color, "--description", desc, "--force", check=False)
 
 
@@ -343,19 +350,31 @@ def apply_patch_rollup(store: Path, args, items: list[dict], units: dict[str, di
     branch, pr, note = prepare_patch_branch(store, args, patch_pr, now)
     applied, fallbacks = [], []
     for item in items:
-        try:
-            # 基于汇总分支当前的主 spec 起草：前面单元的补登已经在其中，MODIFIED 不会覆盖它们
-            draft = draft_one(item, units.get(item["pr"]) or {}, load_capabilities(store), key, model)
-        except Exception as error:  # noqa: BLE001 —— 起草失败只退回空壳补登，不中断观察
-            draft = {"error": f"起草失败：{error}"[:300]}
-        reason = draft.get("error", "")
-        if not reason:
-            summaries, reason = merge_draft(store, item, draft, now)
-        if reason:
+        reason = ""
+        draft = {}
+        for attempt in range(2):
+            try:
+                if attempt:
+                    draft = draft_one(item, units.get(item["pr"]) or {}, load_capabilities(store), key, model, feedback=reason)
+                else:
+                    draft = draft_one(item, units.get(item["pr"]) or {}, load_capabilities(store), key, model)
+            except Exception as error:
+                draft = {"error": f"起草失败：{type(error).__name__}"}
+            reason = draft.get("error", "")
+            if not reason:
+                if draft.get("backfill_mode") == "change":
+                    reason = preflight(store, f"obs-backfill-{ref_suffix(item['pr'])}", [item], draft, now)
+                else:
+                    summaries, reason = merge_draft(store, item, draft, now)
+            if not reason:
+                break
             run(store, "git", "reset", "-q", "--hard")
             run(store, "git", "clean", "-fdq", "--", "openspec")
+        if reason or draft.get("backfill_mode") == "change":
+            item = {**item, "_draft": draft, "_unit": units.get(item["pr"]) or {}}
             fallbacks.append((item, reason))
             continue
+        save_record(store, [item], draft, "spec")
         allowed, denied = guarded_paths(store)
         if denied:
             revert_paths(store, denied)
@@ -386,43 +405,38 @@ def apply_patch_rollup(store: Path, args, items: list[dict], units: dict[str, di
 
 
 def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids: set[str], reason: str) -> str:
-    """起草失败的未登记变化：单独开预置空壳补登 change 的 PR。"""
+    """完整补登 Change；失败时保留已起草内容和具体诊断，不伪装可归档。"""
     repo = ref_repo(item["pr"])
     name = f"obs-{repo.split('/')[1].lower()}-{ref_suffix(item['pr'])}"
     branch = f"obs/{name}"
     start_branch(store, args.base, branch, False)
-    directory = store / "openspec" / "changes" / name
-    directory.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "schema": "store",
-        "created": now.date().isoformat(),
-        "title": f"补登：{item['title']}"[:80],
-        "ID": new_change_id(store, now, used_ids),
-        "type": "feature",
-        "priority": "",
-        "assignee": "",
-        "version": "",
-        "deadline": "",
-        "repositories": [repo],
-        "tier": "light",
-        # 补登的是已合入的实现：直接预填已实现与实现记录，需求侧只需补写需求与元数据。
-        "status": "已实现",
-        "implementations": [
-            {"pr": item["pr"], "url": item["url"], "merged_at": item.get("merged_at") or "",
-             "basis": f"补登：{item['behavior']}"[:200], "hint": False, "confidence": "高"}
-        ],
-    }
-    (directory / ".openspec.yaml").write_text(dump_yaml(meta), encoding="utf-8")
-    (directory / "proposal.md").write_text(
-        f"## 说明\n\n实现观察发现 [{item['pr']}]({item['url']}) 改变了产品行为：{item['behavior']}\n\n建议：{item['suggestion']}\n\n"
-        "## 验收场景\n\n- **AC-1** 待需求侧补写。\n\n## 涉及规范\n\n### 新增特性\n\n### 改动特性\n",
-        encoding="utf-8",
-    )
-    denied = commit_and_push(store, branch, f"obs: 未登记的行为变化 {item['pr']}")
-    body = unregistered_body(item, reason) + "\n" + render_marker({"change": None, "prs": [item["pr"]]})
-    url = run(store, "gh", "pr", "create", "--draft", "--base", args.base, "--head", branch, "--label", LABEL,
-              "--title", f"obs: 未登记的行为变化 {item['pr']}", "--body-file", "-", input_text=body)
-    return f"- {item['pr']} → {url}（空壳补登：{reason}）" + (f"（已拒绝写入：{', '.join(denied)}）" if denied else "")
+    draft = item.get("_draft") or {"deltas": [], "title": item['title'], "summary": item['behavior']}
+    if draft.get("deltas"):
+        reason = preflight(store, name, [item], draft, now)
+        if reason and os.environ.get("DEEPSEEK_API_KEY"):
+            try:
+                draft = draft_one(item, item.get("_unit") or {}, load_capabilities(store),
+                    os.environ["DEEPSEEK_API_KEY"], os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash", feedback=reason)
+                reason = draft.get("error") or preflight(store, name, [item], draft, now)
+            except Exception as error:
+                reason = f"重写失败：{type(error).__name__}"
+        meta = materialize(store, name, [item], draft, now)
+        proposal = (store / 'openspec/changes' / name / 'proposal.md').read_text()
+    else:
+        meta, proposal = {}, ''
+        reason = reason or draft.get('error') or '未生成可验证 delta，保留证据待处理'
+    save_record(store, [item], draft, "change", change_name=name, change_meta=meta, proposal=proposal, validation_error=reason)
+    denied = commit_and_push(store, branch, f"obs: 补登 Change {item['pr']}")
+    marker = {"change": name if meta else None, "kind": "backfill", "prs": [item['pr']]}
+    body = (f"## 完整补登 Change\n\n[{item['pr']}]({item['url']})：{item['behavior']}\n\n"
+            f"**默认判断**：{draft.get('mode_reason') or '产品行为变更，保留独立需求记录'}\n\n"
+            + (f"**待处理校验问题**：{reason}；本 PR 保持草稿，不自动归档。\n\n" if reason else
+               "已通过 Change 校验、归档试合并和主 spec 严格校验。\n\n")
+            + "标签 `obs:as-spec` 可转为直接更新主 spec；`obs:as-change` 可转回完整 Change。"
+            "审阅后 Ready for review 并通过 Store 检查，验收通过可使用 `obs:archive`。\n\n" + render_marker(marker))
+    url = run(store, 'gh', 'pr', 'create', '--draft', '--base', args.base, '--head', branch, '--label', LABEL,
+              '--label', 'obs:change', '--title', f"obs: 补登 Change {draft.get('title') or item['title']}"[:120], '--body-file', '-', input_text=body)
+    return f"- {item['pr']} → {url}（完整补登 Change{('，待修正：' + reason) if reason else '，归档预演通过'}）"
 
 
 def main() -> int:

@@ -26,4 +26,6 @@ delta 格式（每个能力一段 markdown）：
 - `title` 是一句话的改动标题（不超过 40 字），`summary` 用一两句话说明主 spec 改了什么。
 - 某个能力其实不需要改时，不要输出它。
 
-只输出一个 JSON 对象：`{"title": "...", "summary": "...", "deltas": [{"capability": "<能力名>", "purpose": "", "markdown": "<delta markdown>"}]}`
+只输出一个 JSON 对象：`{"backfill_mode": "spec", "mode_reason": "...", "title": "...", "summary": "...", "deltas": [{"capability": "<能力名>", "purpose": "", "markdown": "<delta markdown>"}]}`
+
+补登形式：输出 backfill_mode（change 或 spec）与 mode_reason（一句话依据）。新增能力、新业务流程、权限/资金/跨链等重要规则变化或多个相互影响的行为变化优先 change；已有规则的小范围修正、文案口径对齐优先 spec。不要仅按代码行数判断。两种形式都必须给出完整 delta 与新能力 Purpose，不能返回空壳。输入 previous_validation_failure 非空时必须修复该错误，保留原场景。

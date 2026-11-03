@@ -82,7 +82,7 @@ TBD_PURPOSE = re.compile(r"^TBD - created by archiving change .*$", re.M)
 
 
 def fill_purposes(store: Path, proposal: str, capabilities: list[str]) -> list[str]:
-    """用 proposal「涉及规范」中的说明替换新能力的 TBD Purpose；返回仍需人工补写或扩写的能力。"""
+    """用 proposal「涉及规范」中的说明替换新能力的 TBD Purpose；返回仍缺少有效 Purpose 的能力。"""
     missing = []
     for capability in capabilities:
         spec = store / "openspec" / "specs" / capability / "spec.md"
@@ -95,8 +95,8 @@ def fill_purposes(store: Path, proposal: str, capabilities: list[str]) -> list[s
         purpose = f"{match.group(1)}：{match.group(2).strip()}" if match else ""
         if purpose:
             spec.write_text(TBD_PURPOSE.sub(purpose, text, count=1), encoding="utf-8")
-        # strict 校验要求 Purpose 至少 50 字符，proposal 的一句话说明常常不够
-        if len(purpose) < 50:
+        # 完整的短 Purpose 只提醒；缺失、为空或占位仍需补写。
+        if not purpose.strip() or re.search(r"\b(TBD|TODO)\b", purpose, re.I):
             missing.append(capability)
     return missing
 
@@ -208,6 +208,16 @@ def main() -> int:
             append_changelog(store, capability, archived_meta, args.change, summaries[capability])
 
     missing_purpose = fill_purposes(store, proposal, active)
+    # 在发布归档 PR 前验证实际合并结果，避免把缺失 Purpose 等问题留到 Store 检查。
+    from strict_spec import check as strict_check
+    failures = []
+    for capability in active:
+        ok, errors, notes = strict_check(capability, str(store))
+        if not ok:
+            failures += errors
+    if failures:
+        print("归档合并结果未通过严格校验，未发布归档提交：\n" + "\n".join(failures))
+        return 1
     uncovered = wiki_uncovered(store, args.store_repo, active)
 
     impls = [i for i in archived_meta.get("implementations") or [] if isinstance(i, dict)]
@@ -222,7 +232,7 @@ def main() -> int:
 ## 主 specs 改动
 {spec_lines}
 
-{"**需要补写 Purpose**：" + "、".join(f"`openspec/specs/{c}/spec.md`" for c in missing_purpose) + " 是新能力，proposal 中没有它的说明或说明不足 50 字，请在本 PR 中补写 Purpose，否则 Store 检查不通过。" + chr(10) if missing_purpose else ""}
+{"**需要补写 Purpose**：" + "、".join(f"`openspec/specs/{c}/spec.md`" for c in missing_purpose) + " 是新能力，proposal 中没有它的说明或说明仍为空/占位，请在本 PR 中补写有效 Purpose；完整但不足 50 字只作提醒。" + chr(10) if missing_purpose else ""}
 {"**未纳入产品 wiki**：" + "、".join(f"`{c}`" for c in uncovered) + " 不在 `wiki/structure.yaml` 的任何页面中，合并后产品 wiki 不会记录本次迭代。需要记录时，在本 PR 中把它们加入 `wiki/structure.yaml` 的合适页面。" + chr(10) if uncovered else ""}
 ## 关联的实现 PR
 {impl_lines or '未观察到关联的实现 PR（允许直接归档）。'}

@@ -1,0 +1,31 @@
+name: OpenSpec observation backfill conversion
+description: 在同一个观察 PR 中切换完整 Change 与直接更新主 spec，预演校验后普通推送
+inputs:
+  pr:
+    description: 本仓观察补登 PR 编号
+    required: true
+  mode:
+    description: change 或 spec
+    required: true
+  store-token:
+    description: Store 写入凭据
+    default: ${{ github.token }}
+  openspec-version:
+    description: OpenSpec CLI 版本
+    default: '1.12.0'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 -c 'import yaml' || python3 -m pip install --quiet pyyaml
+        npm install -g '@fission-ai/openspec@${{ inputs.openspec-version }}' >/dev/null
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        PR: ${{ inputs.pr }}
+        MODE: ${{ inputs.mode }}
+        OPENSPEC_TELEMETRY: '0'
+      run: |
+        python3 '${{ github.action_path }}/../observe/backfill.py' \
+          --repo "$GITHUB_REPOSITORY" --pr "$PR" --mode "$MODE" | tee -a "$GITHUB_STEP_SUMMARY"

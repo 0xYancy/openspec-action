@@ -39,7 +39,7 @@ CHECK = ACTIONS / "store-check" / "check.py"
 
 
 def git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True)
 
 
 def write_file(root: Path, rel: str, text: str) -> None:
@@ -305,7 +305,7 @@ class ArchiveTest(unittest.TestCase):
             proposal = (f"- **能力甲**（标识 `cap-a`）：{long_text}\n"
                         "- **能力丙**（标识 `cap-c`）：用户可以提前赎回并支付手续费\n")
             missing = archive.fill_purposes(root, proposal, ["cap-a", "cap-b", "cap-c"])
-            self.assertEqual(missing, ["cap-b", "cap-c"])
+            self.assertEqual(missing, ["cap-b"])
             self.assertIn(f"能力甲：{long_text}", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
             self.assertIn("能力丙：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-c/spec.md").read_text(encoding="utf-8"))
 
@@ -380,11 +380,11 @@ class PatchDraftTest(unittest.TestCase):
         self.assertIn("ADDED / MODIFIED", draft.check_draft({"deltas": [{"capability": "cap", "markdown": "## REMOVED Requirements\n"}]}, specs, set()))
         self.assertIn("未选定", draft.check_draft({"deltas": [{"capability": "other", "markdown": "## ADDED Requirements\n"}]}, specs, set()))
         self.assertIn("Purpose", draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "  ", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}))
-        self.assertEqual(draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "负责质押入口。", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}), "")
+        self.assertIn("没有需求条目", draft.check_draft({"deltas": [{"capability": "fresh", "purpose": "负责质押入口。", "markdown": "## ADDED Requirements\n"}]}, specs, {"fresh"}))
         self.assertIn("没有给出", draft.check_draft({"deltas": []}, specs, set()))
         dropped = {"deltas": [{"capability": "cap", "markdown": "## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 新场景\n- **当** a\n- **则** b\n"}]}
         self.assertIn("漏掉了原有场景：提交赎回", draft.check_draft(dropped, specs, set()))
-        mixed = {"deltas": [{"capability": "cap", "markdown": "## ADDED Requirements\n\n### Requirement: 新需求\nx SHALL y\n\n## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 提交赎回\n- **当** a\n- **则** b\n"}]}
+        mixed = {"deltas": [{"capability": "cap", "markdown": "## ADDED Requirements\n\n### Requirement: 新需求\nx SHALL y\n\n#### Scenario: 新需求场景\n- **当** a\n- **则** b\n\n## MODIFIED Requirements\n\n### Requirement: 赎回确认\nx SHALL y\n\n#### Scenario: 提交赎回\n- **当** a\n- **则** b\n"}]}
         self.assertEqual(draft.check_draft(mixed, specs, set()), "")
 
     def test_draft_retries_once_with_reason(self) -> None:
@@ -422,6 +422,7 @@ class PatchDraftTest(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual([d["capability"] for d in result["deltas"]], ["other", "fresh-cap"])
         self.assertEqual(result["deltas"][1]["purpose"], purpose)
+        self.assertEqual(result["backfill_mode"], "change")
         self.assertIn("other Specification", sent[-1][-1]["content"])  # 重写时提供了新纳入能力的主 spec
 
     def test_merge_draft_updates_main_spec_only(self) -> None:
@@ -546,7 +547,7 @@ class PatchRollupTest(unittest.TestCase):
     def test_sequential_units_and_append(self) -> None:
         seen = []
 
-        def fake_draft(item, unit, specs, key, model):
+        def fake_draft(item, unit, specs, key, model, feedback=""):
             seen.append(specs["cap"])
             scenarios = {"o/d#1": ("场景甲",), "o/d#2": ("场景甲", "场景乙"), "o/d#3": ("场景甲", "场景乙", "场景丙")}[item["pr"]]
             return {"title": item["pr"], "summary": "s", "deltas": [{"capability": "cap", "purpose": "", "markdown": self.modified(*scenarios)}]}
@@ -581,8 +582,23 @@ class PatchRollupTest(unittest.TestCase):
         log = subprocess.run(["git", "log", "--format=%s", "origin/main..HEAD"], cwd=self.root, capture_output=True, text=True).stdout
         self.assertEqual(log.count("obs: 补登"), 3)
 
+    def test_full_change_default_writes_complete_archivable_delta(self) -> None:
+        write.draft_one = lambda item, unit, specs, key, model, feedback="": {
+            "backfill_mode": "change", "mode_reason": "重要规则变化", "title": "新增确认", "summary": "新增确认规则",
+            "deltas": [{"capability": "cap", "purpose": "", "markdown": self.modified("确认失败")}]}
+        args = type("A", (), {"base": "main"})()
+        now = dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc)
+        lines, changes = write.apply_patch_rollup(self.root, args, [self.item("o/d#7")], {}, None, now)
+        self.assertEqual(lines, [])
+        self.assertEqual(changes[0][1], "")
+        result = write.apply_unregistered(self.root, args, changes[0][0], now, set(), "")
+        self.assertIn("归档预演通过", result)
+        self.assertTrue((self.root / "openspec/changes/obs-d-7/specs/cap/spec.md").is_file())
+        self.assertEqual((self.root / "openspec/specs/cap/spec.md").read_text(), self.SPEC)
+        self.assertTrue(any("obs:change" in args for args, _ in self.gh_calls))
+
     def test_failed_unit_falls_back(self) -> None:
-        write.draft_one = lambda item, unit, specs, key, model: {"error": "模型没有选出需要更新的能力"}
+        write.draft_one = lambda item, unit, specs, key, model, feedback="": {"error": "模型没有选出需要更新的能力"}
         args = type("A", (), {"base": "main"})()
         lines, fallbacks = write.apply_patch_rollup(self.root, args, [self.item("o/d#1")], {}, None,
                                                     dt.datetime(2026, 10, 25, tzinfo=dt.timezone.utc))

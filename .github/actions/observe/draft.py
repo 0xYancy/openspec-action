@@ -72,11 +72,17 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
     deltas = draft.get("deltas")
     if not isinstance(deltas, list) or not deltas:
         return "模型没有给出任何 delta"
+    seen = set()
     for delta in deltas:
+        if not isinstance(delta, dict):
+            return "delta 条目必须是对象"
         name = str(delta.get("capability") or "")
         markdown = str(delta.get("markdown") or "")
         if name not in existing | new or not CAPABILITY.match(name):
             return f"delta 指向了未选定的能力 `{name}`"
+        if name in seen:
+            return f"能力 `{name}` 的 delta 重复"
+        seen.add(name)
         sections = set(DELTA_SECTION.findall(markdown))
         if not sections or sections - {"ADDED", "MODIFIED"}:
             return f"`{name}` 的 delta 只能包含 ADDED / MODIFIED Requirements"
@@ -84,6 +90,9 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
             return f"新能力 `{name}` 只能新增需求，且必须写出 Purpose"
         if name in existing:
             current = requirement_blocks(specs[name])
+            repeated = set(requirement_blocks(delta_sections(markdown).get("ADDED", ""))) & set(current)
+            if repeated:
+                return f"`{name}` ADDED 与现有需求重名：{'、'.join(sorted(repeated))}"
             modified = requirement_blocks(delta_sections(markdown).get("MODIFIED", ""))
             unknown = [t for t in modified if t not in current]
             if unknown:
@@ -93,6 +102,11 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
                 dropped = [sc for sc in SCENARIO.findall(current[title]) if sc not in SCENARIO.findall(block)]
                 if dropped:
                     return f"`{name}` 的 MODIFIED 需求「{title}」漏掉了原有场景：{'、'.join(dropped)}；请原样保留它们，或只修改其内容"
+        for title, block in requirement_blocks(markdown).items():
+            if not re.search(r"\b(SHALL|MUST)\b", block) or not SCENARIO.search(block):
+                return f"`{name}` 的需求「{title}」缺少 SHALL/MUST 或验收场景"
+        if not REQUIREMENT.search(markdown):
+            return f"`{name}` 没有需求条目"
     return ""
 
 
@@ -111,7 +125,7 @@ def widen(draft: dict, existing_text: dict[str, str], specs: dict[str, str], new
     return added
 
 
-def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, model: str) -> dict:
+def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, model: str, feedback: str = "") -> dict:
     selected, _ = ask("draft_select.md", {
         "unit": unit_view(unit),
         "behavior": item.get("behavior"),
@@ -129,6 +143,7 @@ def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, m
         "behavior": item.get("behavior"),
         "specs": specs,
         "new_capabilities": sorted(new),
+        "previous_validation_failure": feedback,
     }, key, model)
     added = widen(draft, existing_text, specs, new)
     reason = check_draft(draft, specs, new)
@@ -140,8 +155,10 @@ def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, m
         widen(draft, existing_text, specs, new)
         reason = check_draft(draft, specs, new)
         if reason:
-            return {"error": f"重写后仍不合法：{reason}"}
+            return {**draft, "error": f"重写后仍不合法：{reason}"}
     return {
+        "backfill_mode": "change" if new else (draft.get("backfill_mode") if draft.get("backfill_mode") in ("change", "spec") else "spec"),
+        "mode_reason": str(draft.get("mode_reason") or ("新增业务能力，保留独立需求记录" if new else "已有能力的小范围规则补正")),
         "title": str(draft.get("title") or "")[:60],
         "summary": str(draft.get("summary") or ""),
         "deltas": [{"capability": d["capability"], "purpose": str(d.get("purpose") or "") if d["capability"] in new else "",
