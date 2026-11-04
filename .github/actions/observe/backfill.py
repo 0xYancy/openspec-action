@@ -60,7 +60,7 @@ def render_proposal(draft: dict, items: list[dict]) -> str:
             line += ' ' + delta['purpose']
         (features if delta.get('purpose') else modified).append(line)
         for block in requirements.values():
-            for match in re.finditer(r'^#### Scenario: (.+)\n(.*?)(?=^#### Scenario:|\Z)', block, re.M | re.S):
+            for match in re.finditer(r'^#### Scenario: ([^\n]+)\n(.*?)(?=^#### Scenario:|\Z)', block, re.M | re.S):
                 details = '；'.join(line.strip().removeprefix('- ').replace('**', '')
                                    for line in match[2].strip().splitlines() if line.strip().startswith('- '))
                 acceptance.append(f"**{match[1]}**：{details}")

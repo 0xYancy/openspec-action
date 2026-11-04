@@ -142,6 +142,9 @@ class ConversionTest(unittest.TestCase):
         self.assertIn('无余额', proposal)
         self.assertIn(self.item['url'], proposal)
         self.assertNotIn('按本 PR 当前审阅内容补登', proposal)
+        self.assertIn('- **正常领取**：', proposal)
+        self.assertIn('- **无余额**：', proposal)
+        self.assertNotIn('#### Scenario:', proposal)
 
     def test_new_capability_with_short_real_purpose_is_archivable(self):
         plan = dict(self.plan, deltas=[dict(capability='new-rewards', purpose='负责新奖励入口。', markdown=DELTA.replace('MODIFIED', 'ADDED'))])
