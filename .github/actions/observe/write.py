@@ -32,7 +32,7 @@ from strict_spec import check as strict_check  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backfill import materialize, preflight, save_record
-from draft import draft_one, load_capabilities  # noqa: E402
+from draft import draft_one, load_capabilities, normalize_spec  # noqa: E402
 
 LABEL = "obs"
 REJECTED_LABEL = "obs:rejected"
@@ -174,9 +174,12 @@ def merge_draft(store: Path, item: dict, draft: dict, now: dt.datetime) -> tuple
     (directory / "proposal.md").write_text(f"## 说明\n\n{draft.get('summary') or item['behavior']}\n", encoding="utf-8")
     summaries = {}
     for delta in draft["deltas"]:
+        current = store / 'openspec/specs' / delta['capability'] / 'spec.md'
+        if current.is_file():
+            current.write_text(normalize_spec(current.read_text(encoding='utf-8')), encoding='utf-8')
         spec = directory / "specs" / delta["capability"] / "spec.md"
         spec.parent.mkdir(parents=True, exist_ok=True)
-        spec.write_text(delta["markdown"], encoding="utf-8")
+        spec.write_text(normalize_spec(delta["markdown"]), encoding="utf-8")
         summaries[delta["capability"]] = delta_summary(spec)
     result = subprocess.run(["openspec", "archive", name, "--yes"], cwd=store, capture_output=True, text=True)
     for leftover in [directory, *(store / "openspec" / "changes" / "archive").glob(f"*-{name}")]:

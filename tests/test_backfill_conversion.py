@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / '.github/actions/observe'))
 sys.path.insert(0, str(ROOT / '.github/actions/shared'))
 import backfill
 import write
+from draft import normalize_spec
 from store_lib import parse_marker
 
 SPEC = '''# rewards Specification
@@ -109,6 +110,39 @@ class ConversionTest(unittest.TestCase):
         self.assertEqual(self.git('status', '--porcelain'), before)
         self.assertEqual((self.root / 'openspec/specs/rewards/spec.md').read_text(), SPEC)
 
+    def test_legacy_chinese_headings_convert_to_main_spec_without_losing_scenarios(self):
+        path = self.root / 'openspec/specs/rewards/spec.md'
+        legacy = lambda text: text.replace('### Requirement: ', '### 需求：').replace('#### Scenario: ', '#### 场景：')
+        path.write_text(legacy(SPEC))
+        self.commit()
+        plan = dict(self.plan, deltas=[dict(capability='rewards', purpose='', markdown=legacy(DELTA))])
+        backfill.materialize(self.root, 'obs-reward-confirmation', [self.item], plan, self.now)
+        # Reproduce an already-created diagnostic Change with legacy headings.
+        (self.root / 'openspec/changes/obs-reward-confirmation/specs/rewards/spec.md').write_text(legacy(DELTA))
+        self.commit()
+        marker = dict(change='obs-reward-confirmation', kind='backfill', prs=[self.item['pr']])
+        result, state = backfill.convert_tree(self.root, self.base, marker, 'spec', 72, self.now)
+        self.assertEqual(state, 'converted')
+        self.assertIsNone(result['change'])
+        self.assertIn('#### Scenario: 正常领取', path.read_text())
+        self.assertIn('#### Scenario: 无余额', path.read_text())
+        self.assertFalse((self.root / 'openspec/changes/obs-reward-confirmation').exists())
+
+    def test_normalization_preserves_fenced_examples(self):
+        example = '```markdown\n### 需求：示例\n#### 场景：示例\n```\n'
+        self.assertEqual(normalize_spec(example), example)
+
+    def test_conversion_summarizes_actual_delta_without_changing_it(self):
+        result = backfill.describe_conversion(self.plan, [self.item])
+        self.assertEqual(result['deltas'], self.plan['deltas'])
+        self.assertTrue(result['change_name'].startswith('obs-rewards-'))
+        self.assertIn('领取前显示确认', result['summary'])
+        proposal = backfill.render_proposal(result, [self.item])
+        self.assertIn('领取前显示确认', proposal)
+        self.assertIn('无余额', proposal)
+        self.assertIn(self.item['url'], proposal)
+        self.assertNotIn('按本 PR 当前审阅内容补登', proposal)
+
     def test_new_capability_with_short_real_purpose_is_archivable(self):
         plan = dict(self.plan, deltas=[dict(capability='new-rewards', purpose='负责新奖励入口。', markdown=DELTA.replace('MODIFIED', 'ADDED'))])
         self.assertEqual(backfill.preflight(self.root, 'obs-new', [self.item], plan, self.now), '')
@@ -169,7 +203,7 @@ elif args[:2]==['pr','edit']:
         after=self.git('rev-parse','origin/obs/test')
         self.assertNotEqual(before,after)
         self.assertEqual(self.git('merge-base','--is-ancestor',before,after),'')
-        self.assertEqual(parse_marker(json.loads(view.read_text())['body'])['change'],'obs-backfill-123')
+        self.assertTrue(parse_marker(json.loads(view.read_text())['body'])['change'].startswith('obs-rewards-'))
         self.assertIn('同一 PR',result)
 
 

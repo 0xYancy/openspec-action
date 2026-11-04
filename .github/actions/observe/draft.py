@@ -22,9 +22,27 @@ SCENARIO = re.compile(r"^#### Scenario:\s*(.+?)\s*$", re.M)
 PATCH_CHARS = 20000
 
 
+def normalize_spec(text: str) -> str:
+    """兼容迁入的中文骨架，只转换围栏外的需求和场景标题。"""
+    lines, fence = [], None
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r'^\s*(`{3,}|~{3,})', line)
+        if marker:
+            token = marker[1]
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+        elif fence is None:
+            line = re.sub(r'^### 需求[：:]\s*', '### Requirement: ', line)
+            line = re.sub(r'^#### 场景[：:]\s*', '#### Scenario: ', line)
+        lines.append(line)
+    return ''.join(lines)
+
+
 def load_capabilities(store: Path) -> dict[str, str]:
     root = store / "openspec" / "specs"
-    return {p.parent.name: p.read_text(encoding="utf-8") for p in sorted(root.glob("*/spec.md"))} if root.is_dir() else {}
+    return {p.parent.name: normalize_spec(p.read_text(encoding="utf-8")) for p in sorted(root.glob("*/spec.md"))} if root.is_dir() else {}
 
 
 def capability_view(name: str, text: str) -> dict:
@@ -51,6 +69,7 @@ def ask(system_file: str, payload: dict, key: str, model: str, history: list[dic
 
 def requirement_blocks(text: str) -> dict[str, str]:
     """需求标题 → 该需求的完整文本（到下一个需求或二级标题为止）。"""
+    text = normalize_spec(text)
     blocks, matches = {}, list(REQUIREMENT.finditer(text))
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
@@ -77,7 +96,7 @@ def check_draft(draft: dict, specs: dict[str, str], new: set[str]) -> str:
         if not isinstance(delta, dict):
             return "delta 条目必须是对象"
         name = str(delta.get("capability") or "")
-        markdown = str(delta.get("markdown") or "")
+        markdown = normalize_spec(str(delta.get("markdown") or ""))
         if name not in existing | new or not CAPABILITY.match(name):
             return f"delta 指向了未选定的能力 `{name}`"
         if name in seen:

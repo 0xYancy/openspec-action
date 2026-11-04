@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / 'shared'))
-from draft import CAPABILITY, check_draft, delta_sections, requirement_blocks
+from draft import CAPABILITY, check_draft, delta_sections, requirement_blocks, normalize_spec
 from store_lib import dump_yaml, load_yaml, parse_marker, render_marker, path_allowed
 
 
@@ -29,6 +29,49 @@ def save_record(store: Path, items: list[dict], draft: dict, mode: str, **extra)
     # 不保存 token、环境变量或实现仓完整 diff。
     selected = [{k: i.get(k) for k in ('pr', 'url', 'title', 'behavior', 'suggestion', 'merged_at')} for i in items]
     path.write_text(json.dumps({'version': 1, 'items': selected, 'draft': draft, 'mode': mode, **extra}, ensure_ascii=False, indent=2) + '\n')
+
+
+def describe_conversion(plan: dict, items: list[dict]) -> dict:
+    """从实际 delta 提取业务标题和说明，不重写已经审阅的需求。"""
+    result = dict(plan)
+    titles = [title for d in plan['deltas'] for title in requirement_blocks(d['markdown'])]
+    result['title'] = '、'.join(titles)[:70]
+    capabilities = sorted(d['capability'] for d in plan['deltas'])
+    suffix = hashlib.sha256('\n'.join(sorted(i['pr'] for i in items)).encode()).hexdigest()[:8]
+    result['change_name'] = 'obs-' + '-'.join(capabilities[:2])[:85].rstrip('-') + '-' + suffix
+    descriptions = []
+    for delta in plan['deltas']:
+        for title, block in requirement_blocks(delta['markdown']).items():
+            body = block.split('\n', 1)[1].split('#### Scenario:', 1)[0].strip()
+            descriptions.append(f"- **{title}**：" + body.split('\n\n', 1)[0])
+    result['summary'] = '\n\n'.join(descriptions)
+    result['background'] = '本次覆盖' + '、'.join(capabilities) + '，按当前 PR 已审阅的规范差异记录以下行为；实际规则和边界以验收场景为准。'
+    return result
+
+
+def render_proposal(draft: dict, items: list[dict]) -> str:
+    features, modified, acceptance = [], [], []
+    for delta in draft.get('deltas') or []:
+        requirements = requirement_blocks(delta['markdown'])
+        line = f"- **{'、'.join(requirements)}**（标识 `{delta['capability']}`）：" + '；'.join(
+            block.split('\n', 1)[1].split('#### Scenario:', 1)[0].strip().split('\n\n', 1)[0]
+            for block in requirements.values())
+        if delta.get('purpose'):
+            line += ' ' + delta['purpose']
+        (features if delta.get('purpose') else modified).append(line)
+        for block in requirements.values():
+            for match in re.finditer(r'^#### Scenario: (.+)\n(.*?)(?=^#### Scenario:|\Z)', block, re.M | re.S):
+                details = '；'.join(line.strip().removeprefix('- ').replace('**', '')
+                                   for line in match[2].strip().splitlines() if line.strip().startswith('- '))
+                acceptance.append(f"**{match[1]}**：{details}")
+    background = draft.get('background') or '\n'.join(
+        '- ' + str(i.get('behavior') or i.get('title') or i['pr']) for i in items)
+    return ('## 说明\n\n' + str(draft.get('summary') or draft.get('title') or '') +
+            '\n\n' + background + '\n\n## 验收场景\n\n' +
+            '\n'.join('- ' + title for title in dict.fromkeys(acceptance)) +
+            '\n\n## 涉及规范\n\n### 新增特性\n\n' + ('\n'.join(features) or '无。') +
+            '\n\n### 改动特性\n\n' + ('\n'.join(modified) or '无。') +
+            '\n\n## 实现来源\n\n' + '\n'.join(f"- [{i['pr']}]({i['url']})" for i in items) + '\n')
 
 
 def materialize(store: Path, name: str, items: list[dict], draft: dict, now: dt.datetime,
@@ -53,21 +96,14 @@ def materialize(store: Path, name: str, items: list[dict], draft: dict, now: dt.
     directory.mkdir(parents=True, exist_ok=True)
     (directory / '.openspec.yaml').write_text(dump_yaml(meta))
     if not proposal:
-        features, modified = [], []
-        for delta in draft.get('deltas') or []:
-            line = f"- **{delta['capability']}**（标识 `{delta['capability']}`）：{delta.get('purpose') or draft.get('summary') or items[0].get('behavior') or '对齐已合入实现的业务规则'}"
-            (features if delta.get('purpose') else modified).append(line)
-        proposal = ('## 摘要\n\n' + str(draft.get('summary') or items[0].get('behavior') or '') +
-            '\n\n## 需求背景\n\n实现已经合入，现补充可追溯的业务规则与验收场景。\n\n## 涉及规范\n\n### 新增特性\n\n' +
-            '\n'.join(features) + '\n\n### 改动特性\n\n' + '\n'.join(modified) + '\n\n## 实现来源\n\n' +
-            '\n'.join(f"- [{i['pr']}]({i['url']})" for i in items) + '\n')
+        proposal = render_proposal(draft, items)
     (directory / 'proposal.md').write_text(proposal)
     for delta in draft.get('deltas') or []:
         if not CAPABILITY.fullmatch(str(delta.get('capability') or '')):
             raise ValueError('非法能力名')
         path = directory / 'specs' / delta['capability'] / 'spec.md'
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(delta['markdown'])
+        path.write_text(normalize_spec(delta['markdown']))
     return meta
 
 
@@ -137,8 +173,8 @@ def convert_tree(store: Path, base: str, marker: dict, mode: str, pr: int, now: 
     known = {i['pr']: i for _, r in records for i in r.get('items') or []}
     items = [known.get(ref) or {'pr': ref, 'url': 'https://github.com/' + ref.replace('#', '/pull/').replace('@', '/compare/'),
              'title': ref, 'behavior': '本 PR 记录的已合入业务变化', 'suggestion': ''} for ref in refs]
-    name = marker.get('change') or next((r.get('change_name') for _, r in records if r.get('change_name')), f'obs-backfill-{pr}')
-    current_mode = 'change' if (store / 'openspec/changes' / name).is_dir() else 'spec'
+    name = marker.get('change') or next((r.get('change_name') for _, r in records if r.get('change_name')), None)
+    current_mode = 'change' if name and (store / 'openspec/changes' / name).is_dir() else 'spec'
     if current_mode == mode:
         return {'change': name if mode == 'change' else None, 'kind': 'backfill' if mode == 'change' else 'patch', 'prs': refs}, 'already'
     saved_meta = next((r.get('change_meta') for _, r in records if r.get('change_meta')), None)
@@ -164,6 +200,11 @@ def convert_tree(store: Path, base: str, marker: dict, mode: str, pr: int, now: 
         saved_meta = meta
     else:
         plan = draft_from_spec_diff(store, base)
+        if not saved_meta:
+            plan = describe_conversion(plan, items)
+            name = plan['change_name']
+        elif not name:
+            raise ValueError('观察记录缺少原始 Change 名称')
         # 只恢复当前 PR 对主规范的改动；已合并的 base 与无关内容不回退。
         paths = subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD', '--', 'openspec/specs'], cwd=store, text=True).splitlines()
         for path in paths:
@@ -188,7 +229,7 @@ def convert_tree(store: Path, base: str, marker: dict, mode: str, pr: int, now: 
 def convert_pr(store: Path, repo: str, number: int, mode: str) -> str:
     def run(*args, cwd=store):
         return subprocess.check_output(args, cwd=cwd, text=True, stderr=subprocess.PIPE).strip()
-    view = json.loads(run('gh', 'pr', 'view', str(number), '--repo', repo, '--json', 'state,isCrossRepository,headRefName,baseRefName,isDraft,body,labels'))
+    view = json.loads(run('gh', 'pr', 'view', str(number), '--repo', repo, '--json', 'state,isCrossRepository,headRefName,baseRefName,isDraft,body,labels,title'))
     labels = {x['name'] for x in view['labels']}
     marker = parse_marker(view['body'] or '')
     if view['state'] != 'OPEN' or view['isCrossRepository'] or 'obs' not in labels or not marker or not view['headRefName'].startswith('obs/'):
@@ -220,13 +261,21 @@ def convert_pr(store: Path, repo: str, number: int, mode: str) -> str:
             if label in labels:
                 run('gh', 'pr', 'edit', str(number), '--repo', repo, '--remove-label', label)
         return '当前已是所选形式，未重复转换或重置审阅状态'
-    body = ('## 补登形式\n\n当前为' + ('完整 Change' if mode == 'change' else '直接更新主 spec') +
+    description = ''
+    if updated.get('change'):
+        # 使用转换提交中的元数据，不把临时 worktree 路径留到清理之后读取。
+        raw = run('git', 'show', f"origin/{branch}:openspec/changes/{updated['change']}/.openspec.yaml")
+        import yaml
+        description = str(yaml.safe_load(raw).get('title') or updated['change'])
+    else:
+        description = re.sub(r'^obs:\s*(?:补登 Change|补登汇总)\s*', '', view.get('title') or '').strip()
+    body = ('## 补登形式\n\n' + (description + '\n\n' if description else '') + '当前为' + ('完整 Change' if mode == 'change' else '直接更新主 spec') +
             '；通过 `obs:as-change` / `obs:as-spec` 可切换。合并前仍需审阅、Ready for review 并通过 Store 检查。\n\n' +
             '## 实现来源\n\n' + '\n'.join('- ' + ref for ref in updated['prs']) + '\n\n' + render_marker(updated))
     previous_body = re.sub(r"<!--\s*openspec-obs:.*?-->", "", view['body'] or '', flags=re.S).strip()
     if previous_body:
         body = body.replace(render_marker(updated), '') + "\n\n<details><summary>转换前的审阅说明</summary>\n\n" + previous_body[:45000] + "\n\n</details>\n\n" + render_marker(updated)
-    title = f"obs: {'补登 Change' if mode == 'change' else '补登汇总'}（PR #{number}，{len(updated['prs'])} 个实现）"
+    title = f"obs: {'补登 Change' if mode == 'change' else '补登汇总'} {description or '已审阅的产品行为更新'}"[:240]
     subprocess.run(['gh', 'pr', 'edit', str(number), '--repo', repo, '--title', title, '--body-file', '-'], input=body, text=True, check=True, cwd=store)
     if not view['isDraft']:
         run('gh', 'pr', 'ready', str(number), '--repo', repo, '--undo')
