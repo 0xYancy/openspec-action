@@ -17,6 +17,27 @@ sys.path.insert(0, str(HERE.parent / 'shared'))
 from draft import CAPABILITY, check_draft, delta_sections, requirement_blocks, normalize_spec
 from store_lib import dump_yaml, load_yaml, parse_marker, render_marker, path_allowed
 
+SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$", re.I)
+
+
+def latest_released_version(store: Path) -> str:
+    """只从 archive 中已发布记录选择最高 SemVer，忽略规划中和格式无效的数据。"""
+    best: tuple[tuple[int, int, int], str] | None = None
+    archive = store / 'openspec/releases/archive'
+    for meta_path in sorted(archive.glob('*/meta.yaml')):
+        meta = load_yaml(meta_path) or {}
+        if str(meta.get('status') or '').strip().casefold() != 'released':
+            continue
+        raw = str(meta.get('version') or meta_path.parent.name).strip()
+        match = SEMVER.fullmatch(raw)
+        if not match:
+            continue
+        key = tuple(int(part) for part in match.groups())
+        normalized = '.'.join(str(part) for part in key)
+        if best is None or key > best[0]:
+            best = (key, normalized)
+    return best[1] if best else ''
+
 
 def record_path(store: Path, refs: list[str]) -> Path:
     key = hashlib.sha256('\n'.join(sorted(refs)).encode()).hexdigest()[:16]
@@ -27,7 +48,10 @@ def save_record(store: Path, items: list[dict], draft: dict, mode: str, **extra)
     path = record_path(store, [i['pr'] for i in items])
     path.parent.mkdir(parents=True, exist_ok=True)
     # 不保存 token、环境变量或实现仓完整 diff。
-    selected = [{k: i.get(k) for k in ('pr', 'url', 'title', 'behavior', 'suggestion', 'merged_at')} for i in items]
+    selected = [{k: i.get(k) for k in (
+        'pr', 'url', 'title', 'behavior', 'suggestion', 'merged_at',
+        'assignee', 'change_type', 'source_sha', 'source_title',
+    )} for i in items]
     path.write_text(json.dumps({'version': 1, 'items': selected, 'draft': draft, 'mode': mode, **extra}, ensure_ascii=False, indent=2) + '\n')
 
 
@@ -84,12 +108,16 @@ def materialize(store: Path, name: str, items: list[dict], draft: dict, now: dt.
     meta.setdefault('created', now.date().isoformat())
     meta.setdefault('title', '补登：' + str(draft.get('title') or items[0]['title'])[:70])
     meta.setdefault('ID', new_change_id(store, now, set()))
-    for key in ('priority', 'assignee', 'version', 'deadline'):
-        meta.setdefault(key, '')
-    meta.setdefault('type', 'feature')
+    source = items[-1]
+    meta.setdefault('priority', '')
+    meta.setdefault('assignee', str(source.get('assignee') or ''))
+    meta.setdefault('version', latest_released_version(store))
+    meta.setdefault('type', str(source.get('change_type') or 'feature'))
     meta['repositories'] = sorted({ref_repo(i['pr']) for i in items})
     meta['implementations'] = [dict(pr=i['pr'], url=i['url'], merged_at=i.get('merged_at') or '',
-        basis=str(i.get('behavior') or i.get('title') or '')[:200], hint=False, confidence='高') for i in items]
+        basis=str(i.get('behavior') or i.get('title') or '')[:200], hint=False, confidence='高',
+        assignee=str(i.get('assignee') or ''), change_type=str(i.get('change_type') or 'feature'),
+        source_sha=str(i.get('source_sha') or ''), source_title=str(i.get('source_title') or '')) for i in items]
     for key in ('progress', 'estimate', 'actual_days'):
         meta.pop(key, None)
     directory = store / 'openspec/changes' / name

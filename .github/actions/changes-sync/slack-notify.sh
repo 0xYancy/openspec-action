@@ -43,28 +43,23 @@ declare -A SLACK_IDS=(
   [Gemma]="U073JSDQWSV"
 )
 
-# 模糊匹配 assignee → Slack User ID
-# 优先精确匹配，然后大小写不敏感匹配，最后子串匹配
+# assignee → Slack User ID：去除首尾空白并忽略大小写后只做完整精确匹配。
+# 未命中或出现歧义时不猜成员，避免把 Lily 之类的名称误发给另一位负责人。
 resolve_slack_id() {
-  local input="$1"
-  # 精确匹配
-  [[ -n "${SLACK_IDS[$input]:-}" ]] && echo "${SLACK_IDS[$input]}" && return
-  # 大小写不敏感匹配
-  local input_lower
-  input_lower=$(echo "$input" | tr '[:upper:]' '[:lower:]')
+  local input input_lower key key_lower matches=()
+  input=$(printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  input_lower=$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')
+  [[ -n "$input_lower" ]] || return 0
   for key in "${!SLACK_IDS[@]}"; do
-    if [[ "$(echo "$key" | tr '[:upper:]' '[:lower:]')" == "$input_lower" ]]; then
-      echo "${SLACK_IDS[$key]}" && return
+    key_lower=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+    if [[ "$key_lower" == "$input_lower" ]]; then
+      matches+=("${SLACK_IDS[$key]}")
     fi
   done
-  # 子串匹配（input 包含 key 或 key 包含 input）
-  for key in "${!SLACK_IDS[@]}"; do
-    local key_lower
-    key_lower=$(echo "$key" | tr '[:upper:]' '[:lower:]')
-    if [[ "$key_lower" == *"$input_lower"* || "$input_lower" == *"$key_lower"* ]]; then
-      echo "${SLACK_IDS[$key]}" && return
-    fi
-  done
+  if (( ${#matches[@]} == 1 )); then
+    printf '%s
+' "${matches[0]}"
+  fi
 }
 
 # 元数据变更解析（格式: field|旧值|新值，多条换行分隔）

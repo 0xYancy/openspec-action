@@ -31,7 +31,7 @@ from archive import TBD_PURPOSE, changelog_path, delta_summary  # noqa: E402
 from strict_spec import check as strict_check  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backfill import materialize, preflight, save_record
+from backfill import latest_released_version, materialize, preflight, save_record
 from draft import draft_one, load_capabilities, normalize_spec  # noqa: E402
 
 LABEL = "obs"
@@ -39,6 +39,7 @@ REJECTED_LABEL = "obs:rejected"
 ARCHIVE_LABEL = "obs:archive"
 REDO_LABEL = "obs:redo"
 PATCH_LABEL = "obs:patch"
+SOURCE_FIELDS = ("url", "title", "merged_at", "assignee", "change_type", "source_sha", "source_title")
 
 
 def run(store: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
@@ -74,7 +75,9 @@ def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
             else:
                 seen.add(ref)
                 paired.add((ref, name))
-                links.setdefault(name, {"change": name, "prs": [], "diffs": []})["prs"].append({**pr, **{k: merged[ref][k] for k in ("url", "title", "merged_at")}})
+                links.setdefault(name, {"change": name, "prs": [], "diffs": []})["prs"].append(
+                    {**pr, **{k: merged[ref].get(k, "") for k in SOURCE_FIELDS}}
+                )
         target = links.get(name)
         if target:
             kept = {p["pr"] for p in target["prs"]}
@@ -84,7 +87,7 @@ def validate(result: dict, data: dict) -> tuple[dict, list[str]]:
         ref = item.get("pr")
         if ref in merged and ref not in seen:
             seen.add(ref)
-            unregistered.append({**item, **{k: merged[ref][k] for k in ("url", "title", "merged_at")}})
+            unregistered.append({**item, **{k: merged[ref].get(k, "") for k in SOURCE_FIELDS}})
     no_draft = []
     for item in result.get("no_draft") or []:
         ref = item.get("pr")
@@ -248,7 +251,12 @@ def apply_link(store: Path, args, change: dict, link: dict, open_draft: dict | N
     known = {i.get("pr") for i in impls if isinstance(i, dict)}
     for p in link["prs"]:
         if p["pr"] not in known:
-            impls.append({"pr": p["pr"], "url": p["url"], "merged_at": p["merged_at"], "basis": p["basis"], "hint": bool(p.get("hint")), "confidence": p["confidence"]})
+            impls.append({
+                "pr": p["pr"], "url": p["url"], "merged_at": p["merged_at"], "basis": p["basis"],
+                "hint": bool(p.get("hint")), "confidence": p["confidence"],
+                "assignee": p.get("assignee") or "", "change_type": p.get("change_type") or "feature",
+                "source_sha": p.get("source_sha") or "", "source_title": p.get("source_title") or "",
+            })
     meta["implementations"] = impls
     meta_path.write_text(dump_yaml(meta), encoding="utf-8")
     denied = commit_and_push(store, branch, f"obs: {change['change']} 关联 {len(link['prs'])} 个实现 PR")
@@ -431,8 +439,18 @@ def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids
     save_record(store, [item], draft, "change", change_name=name, change_meta=meta, proposal=proposal, validation_error=reason)
     denied = commit_and_push(store, branch, f"obs: 补登 Change {item['pr']}")
     marker = {"change": name if meta else None, "kind": "backfill", "prs": [item['pr']]}
+    default_meta = f"""## 默认元数据
+
+- 负责人：{meta.get('assignee') or item.get('assignee') or '未指定'}
+- 类型：{meta.get('type') or item.get('change_type') or 'feature'}
+- 版本：{meta.get('version') if meta else latest_released_version(store) or '未指定'}
+- 优先级：{meta.get('priority') or '未指定'}
+
+产品可直接在本分支修改 `.openspec.yaml`；后续转换和重新观察会保留这里的值。
+"""
     body = (f"## 完整补登 Change\n\n[{item['pr']}]({item['url']})：{item['behavior']}\n\n"
             f"**默认判断**：{draft.get('mode_reason') or '产品行为变更，保留独立需求记录'}\n\n"
+            + default_meta + "\n"
             + (f"**待处理校验问题**：{reason}；本 PR 保持草稿，不自动归档。\n\n" if reason else
                "已通过 Change 校验、归档试合并和主 spec 严格校验。\n\n")
             + "标签 `obs:as-spec` 可转为直接更新主 spec；`obs:as-change` 可转回完整 Change。"

@@ -39,6 +39,7 @@ from store_lib import (  # noqa: E402
 CANDIDATE_STATUS = {"已批准", "已实现"}
 BOT_AUTHORS = re.compile(r"(dependabot|renovate|github-actions)", re.I)
 TECH_TITLE = re.compile(r"^(chore|build|ci|test|tests|style)(\([^)]*\))?!?:", re.I)
+CONVENTIONAL_TYPE = re.compile(r"^\s*(?P<kind>[a-z]+)(?:\([^)]*\))?!?:\s*", re.I)
 TECH_LABELS = {"dependencies", "deps", "ci", "tests", "test", "chore"}
 TECH_FILE = re.compile(
     r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum|poetry\.lock|\.github/|"
@@ -135,18 +136,39 @@ def fetch_pulls(repo: str, branch: str, token: str, since: dt.datetime) -> tuple
     return merged, opened
 
 
-def fetch_pr_shas(repo: str, pulls: list[dict], token: str) -> set[str]:
-    """已合并 PR 的提交与合并提交：直接推送的提交要排除它们。"""
-    shas: set[str] = set()
-    for pr in pulls:
-        if pr.get("merge_commit_sha"):
-            shas.add(pr["merge_commit_sha"])
-        for page in range(1, 4):
-            items = gh_request(f"/repos/{repo}/pulls/{pr['number']}/commits?per_page=100&page={page}", token) or []
-            shas.update(c["sha"] for c in items)
-            if len(items) < 100:
-                break
-    return shas
+def fetch_pull_commits(repo: str, number: int, token: str) -> list[dict]:
+    """按 API 返回顺序读取 PR 的来源提交，最后一页的末项即最后一个来源 commit。"""
+    commits: list[dict] = []
+    for page in range(1, 4):
+        items = gh_request(f"/repos/{repo}/pulls/{number}/commits?per_page=100&page={page}", token) or []
+        commits += items
+        if len(items) < 100:
+            break
+    return commits
+
+
+def change_type_from_subject(subject: str) -> str:
+    """把决定性的 Conventional Commit 类型映射到 Store 类型。"""
+    match = CONVENTIONAL_TYPE.match(subject or "")
+    kind = match.group("kind").casefold() if match else ""
+    return {"fix": "bugfix", "refactor": "refactor"}.get(kind, "feature")
+
+
+def commit_source_metadata(commit: dict | None) -> dict[str, str]:
+    """从单个来源 commit 提取可追溯元数据；合入者和 reviewer 不参与。"""
+    if not commit:
+        return {"assignee": "", "change_type": "feature", "source_sha": "", "source_title": ""}
+    message = str((commit.get("commit") or {}).get("message") or "")
+    subject = message.split("\n", 1)[0].strip()
+    author = (commit.get("commit") or {}).get("author") or {}
+    github_author = commit.get("author") or {}
+    assignee = str(author.get("name") or "").strip() or str(github_author.get("login") or "").strip()
+    return {
+        "assignee": assignee,
+        "change_type": change_type_from_subject(subject),
+        "source_sha": str(commit.get("sha") or ""),
+        "source_title": subject,
+    }
 
 
 def fetch_commits(repo: str, branch: str, token: str, since: dt.datetime) -> list[dict]:
@@ -318,7 +340,14 @@ def main() -> int:
         try:
             merged, opened = fetch_pulls(slug, repo["branch"], token, since)
             new_count = 0
+            pr_shas: set[str] = set()
+            pr_commits: dict[int, list[dict]] = {}
             for pr in sorted(merged, key=lambda p: p["merged_at"]):
+                commits = fetch_pull_commits(slug, pr["number"], token)
+                pr_commits[pr["number"]] = commits
+                if pr.get("merge_commit_sha"):
+                    pr_shas.add(pr["merge_commit_sha"])
+                pr_shas.update(c["sha"] for c in commits)
                 ref = pr_ref(slug, pr["number"])
                 if ref in handled or ref in (entry.get("technical") or []):
                     continue
@@ -329,6 +358,7 @@ def main() -> int:
                     continue
                 names, patch = summarize_files(files)
                 text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}\n{pr['head']['ref']}"
+                source = commit_source_metadata((pr_commits.get(pr["number"]) or [None])[-1])
                 merged_items.append(
                     {
                         "kind": "pr",
@@ -341,11 +371,11 @@ def main() -> int:
                         "files": names[:80],
                         "patch": patch,
                         "hints": hints_for(text, candidates, args.store_repo),
+                        **source,
                     }
                 )
                 new_count += 1
             # 不经 PR 直接推送到观察分支的提交
-            pr_shas = fetch_pr_shas(slug, merged, token)
             direct = 0
             commits = fetch_commits(slug, repo["branch"], token, since)
             # 已处理过的提交与 PR 的提交一样切断分组，只有未覆盖的提交组成新的实现单元
@@ -362,6 +392,7 @@ def main() -> int:
                 names, patch = summarize_files(files)
                 messages = "\n".join(f"- {c['sha'][:7]} {c['commit']['message'].strip()}" for c in batch)
                 title = batch[-1]["commit"]["message"].split("\n")[0]
+                source = commit_source_metadata(batch[-1])
                 merged_items.append(
                     {
                         "kind": "commits",
@@ -374,6 +405,7 @@ def main() -> int:
                         "files": names[:80],
                         "patch": patch,
                         "hints": hints_for(messages, candidates, args.store_repo),
+                        **source,
                     }
                 )
                 direct += 1

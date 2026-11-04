@@ -92,8 +92,12 @@ class ConversionTest(unittest.TestCase):
         self.assertEqual(path.read_text(), SPEC)
         directory = self.root / 'openspec/changes' / changed['change']
         self.assertIn('显示余额不足并保留输入', (directory / 'specs/rewards/spec.md').read_text())
-        before_meta = (directory / '.openspec.yaml').read_text()
+        meta_path = directory / '.openspec.yaml'
+        reviewed_meta = backfill.load_yaml(meta_path)
+        reviewed_meta.update(assignee='Reviewed Owner', type='bugfix', version='0.8.2', priority='P1')
+        meta_path.write_text(backfill.dump_yaml(reviewed_meta))
         self.commit()
+        before_meta = meta_path.read_text()
         direct, state = backfill.convert_tree(self.root, self.base, changed, 'spec', 123, self.now)
         self.assertEqual(state, 'converted')
         self.assertIsNone(direct['change'])

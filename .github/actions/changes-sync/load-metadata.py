@@ -35,6 +35,8 @@ def main():
         sys.stderr.write(f"Invalid metadata structure in {yaml_path}: expected mapping\n")
         sys.exit(1)
 
+    # 历史文件中的 deadline 仍可读取，但旧同步链路不再把它传给任何消费者。
+    data.pop("deadline", None)
     data["change"] = os.path.basename(os.path.normpath(change_dir))
 
     # default=str 处理 YAML 自动识别的 date / datetime 类型（如 created 字段）
