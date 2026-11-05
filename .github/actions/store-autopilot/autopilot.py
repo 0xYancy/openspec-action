@@ -14,6 +14,8 @@ import urllib.request
 
 ACTIONS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ACTIONS / 'shared'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pr_summary import summarize, fallback_points
 from store_lib import gh_request, parse_marker, render_marker, path_allowed, load_yaml
 from strict_spec import check as strict_check
 
@@ -34,14 +36,17 @@ def escape(value: str) -> str:
     return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
-def card(repo: str, title: str, summary: str, url: str, pr: dict | None = None) -> dict:
+def card(repo: str, title: str, summary: str, url: str, pr: dict | None = None, points: list[str] | None = None) -> dict:
     subject = re.sub(r'^(obs:|wiki:)\s*', '', (pr or {}).get('title', '')).strip()
     detail = (f'*{escape(subject[:120])}*\n' if subject else '') + escape(summary[:600])
+    bullets = '\n'.join('• ' + escape(p) for p in points or [])
+    if bullets:
+        detail += '\n\n*改动摘要*\n' + bullets
     links = f'<{url}|查看 PR>' if pr else f'<{url}|查看运行>'
     run_url = os.environ.get('RUN_URL', '')
     if pr and run_url:
         links += f'  ·  <{run_url}|运行详情>'
-    return {'channel': CHANNEL, 'text': f'{title} | {repo}\n{subject}\n{summary}\n{url}',
+    return {'channel': CHANNEL, 'text': f'{title} | {repo}\n{subject}\n{summary}\n' + ('改动摘要\n' + '\n'.join('• ' + p for p in points) + '\n' if points else '') + url,
             'unfurl_links': False, 'unfurl_media': False,
             'blocks': [
                 {'type': 'header', 'text': {'type': 'plain_text', 'text': title}},
@@ -96,6 +101,7 @@ class Pilot:
         self.repo, self.base, self.work = repo, base, work
         self.token = os.environ['GH_TOKEN']
         self.prefix = f'/repos/{repo}'
+        self.summary_cache: dict[tuple, list[str]] = {}
 
     def api(self, path: str, method: str = 'GET', body=None):
         return gh_request(self.prefix + path, self.token, method, body)
@@ -120,7 +126,14 @@ class Pilot:
     def notify(self, pr: dict, key: str, title: str, summary: str) -> None:
         if key in self.notices(pr):
             return
-        slack(card(self.repo, title, summary, pr['html_url'], pr))
+        cache_key = (pr['number'], pr['head']['sha'])
+        if cache_key not in self.summary_cache:
+            try:
+                files = self.pages(f'/pulls/{pr["number"]}/files')
+                self.summary_cache[cache_key] = summarize(pr, files)
+            except Exception:
+                self.summary_cache[cache_key] = fallback_points(pr, [])
+        slack(card(self.repo, title, summary, pr['html_url'], pr, self.summary_cache[cache_key]))
         self.mark(pr, key, f'{title}：{summary}')
 
     def prepare_archive(self, pr: dict) -> dict:
