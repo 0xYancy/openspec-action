@@ -297,12 +297,22 @@ class Pilot:
         self.notify(pr, 'merged', '✅ 自动化 PR 已合入', {'observe':'Change 已合入，状态为「已实现」。', 'wiki':'Wiki 已合入发布，知识中心将在下一次索引时更新。', 'archive':'需求已归档，主 spec 已同步，继续更新关联 Issue。'}[kind])
         self.followup(pr)
 
+    def writer_running(self, kind: str) -> bool:
+        names = {'observe': {'Store · 实现观察', 'Store · 观察 PR 归档', 'Store · 补登形式切换'},
+                 'wiki': {'Store · 产品 wiki'}, 'archive': {'Store · 验收归档'}}[kind]
+        runs = self.api('/actions/runs?status=in_progress&per_page=100')
+        # 不在生产者仍可能追加提交时归档／合入；workflow_run 或下一轮恢复会继续处理。
+        return runs.get('total_count', 0) > 100 or any(r.get('name') in names for r in runs.get('workflow_runs', []))
+
     def main(self) -> int:
         failures = 0
         processed = set()
         for pr in self.pages('/pulls?state=open&sort=created&direction=asc'):
             kind = eligible(pr, self.repo, self.base)
             if not kind:
+                continue
+            if self.writer_running(kind):
+                print(f'PR #{pr["number"]}: 生成任务仍在运行，完成后继续自动处理')
                 continue
             processed.add(pr['number'])
             try:

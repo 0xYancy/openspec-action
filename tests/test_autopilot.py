@@ -124,6 +124,15 @@ class FlowTest(unittest.TestCase):
         self.pilot.pages=lambda p:[{'user':{'login':'human'},'body':'<!-- openspec-autopilot:opened -->'},
                                    {'user':{'login':a.BOT},'body':'<!-- openspec-autopilot:merged -->'}]
         self.assertEqual(self.pilot.notices(pr()),{'merged'})
+    def test_running_generator_defers_merge_until_generation_finishes(self):
+        self.pilot.api=lambda *args: {'total_count':1,'workflow_runs':[{'name':'Store · 实现观察'}]}
+        self.assertTrue(self.pilot.writer_running('observe'))
+        self.assertFalse(self.pilot.writer_running('wiki'))
+        self.pilot.pages=lambda path: [pr()] if 'state=open' in path else []
+        self.pilot.process=lambda *args: self.fail('producer is still writing')
+        self.assertEqual(self.pilot.main(),0)
+
+
 
 class ArchiveIntegrationTest(unittest.TestCase):
     SPEC = '''# Example Specification
