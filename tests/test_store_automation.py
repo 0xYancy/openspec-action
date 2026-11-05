@@ -518,7 +518,7 @@ class PatchRollupTest(unittest.TestCase):
         git(base, "init", "-q", "--bare", "-b", "main", str(self.remote))
         self.root = base / "store"
         git(base, "clone", "-q", str(self.remote), str(self.root))
-        git(self.root, "config", "user.name", "t"); git(self.root, "config", "user.email", "t@t")
+        git(self.root, "config", "user.name", "t"); git(self.root, "config", "user.email", "t@t"); git(self.root, "config", "commit.gpgsign", "false")
         write_file(self.root, "openspec/specs/cap/spec.md", self.SPEC)
         git(self.root, "add", "-A"); git(self.root, "commit", "-qm", "base"); git(self.root, "push", "-q", "origin", "main")
         self.gh_calls: list[tuple] = []
@@ -544,43 +544,23 @@ class PatchRollupTest(unittest.TestCase):
     def item(self, ref: str) -> dict:
         return {"pr": ref, "url": "https://x", "title": ref, "behavior": "b"}
 
-    def test_sequential_units_and_append(self) -> None:
-        seen = []
-
-        def fake_draft(item, unit, specs, key, model, feedback=""):
-            seen.append(specs["cap"])
-            scenarios = {"o/d#1": ("场景甲",), "o/d#2": ("场景甲", "场景乙"), "o/d#3": ("场景甲", "场景乙", "场景丙")}[item["pr"]]
-            return {"title": item["pr"], "summary": "s", "deltas": [{"capability": "cap", "purpose": "", "markdown": self.modified(*scenarios)}]}
-
-        write.draft_one = fake_draft
+    def test_every_unit_is_a_change_even_when_model_selects_spec(self) -> None:
+        write.draft_one = lambda item, unit, specs, key, model, feedback="": {
+            "backfill_mode": "spec", "title": item['pr'], "summary": "s",
+            "deltas": [{"capability": "cap", "purpose": "", "markdown": self.modified("新增场景")}]}
         args = type("A", (), {"base": "main"})()
-        now = dt.datetime(2026, 10, 25, 8, 0, tzinfo=dt.timezone.utc)
-        lines, fallbacks = write.apply_patch_rollup(self.root, args, [self.item("o/d#1"), self.item("o/d#2")], {}, None, now)
-        self.assertEqual(fallbacks, [])
-        self.assertEqual(len(lines), 2)
-        self.assertIn("场景甲", seen[1])  # 第二个单元基于第一个补登后的主 spec 起草
-        create = [c for c in self.gh_calls if c[0][1:3] == ("pr", "create")][0]
-        self.assertIn("obs:patch", create[0])
-        self.assertIn('"prs": ["o/d#1", "o/d#2"]', create[1])
-
-        # 主分支前进后追加：汇总分支重放到最新主分支，新单元追加到原 PR
-        git(self.root, "checkout", "-q", "main")
-        write_file(self.root, "openspec/specs/other/spec.md", "x")
-        git(self.root, "add", "-A"); git(self.root, "commit", "-qm", "main moves"); git(self.root, "push", "-q", "origin", "main")
-        self.gh_calls.clear()
-        patch_pr = {"number": 9, "url": "u9", "branch": "obs/patch-202610250800", "prs": ["o/d#1", "o/d#2"]}
-        lines, _ = write.apply_patch_rollup(self.root, args, [self.item("o/d#3")], {}, patch_pr, now)
-        self.assertEqual(len(lines), 1)
-        spec = (self.root / "openspec/specs/cap/spec.md").read_text(encoding="utf-8")
-        for name in ("场景甲", "场景乙", "场景丙"):
-            self.assertIn(name, spec)
-        self.assertTrue((self.root / "openspec/specs/other/spec.md").is_file())
-        edit = [c for c in self.gh_calls if c[0][1:3] == ("pr", "edit")][0]
-        self.assertIn('"prs": ["o/d#1", "o/d#2", "o/d#3"]', edit[1])
-        self.assertEqual(edit[1].count("openspec-obs"), 1)
-        self.assertTrue(any(c[0][1:4] == ("pr", "ready", "9") for c in self.gh_calls))
-        log = subprocess.run(["git", "log", "--format=%s", "origin/main..HEAD"], cwd=self.root, capture_output=True, text=True).stdout
-        self.assertEqual(log.count("obs: 补登"), 3)
+        now = dt.datetime(2026, 11, 5, tzinfo=dt.timezone.utc)
+        lines, changes = write.apply_patch_rollup(self.root, args, [self.item("o/d#1"), self.item("o/d#2")], {}, None, now)
+        self.assertEqual(lines, [])
+        self.assertEqual(len(changes), 2)
+        self.assertTrue(all(not reason for _, reason in changes))
+        self.assertEqual((self.root / "openspec/specs/cap/spec.md").read_text(), self.SPEC)
+        self.assertEqual(self.gh_calls, [])  # 起草与预演没有推送、没有修改主 spec。
+        for item, reason in changes:
+            write.apply_unregistered(self.root, args, item, now, set(), reason)
+            self.assertTrue((self.root / f"openspec/changes/obs-d-{item['pr'].split('#')[1]}/specs/cap/spec.md").is_file())
+            self.assertEqual((self.root / "openspec/specs/cap/spec.md").read_text(), self.SPEC)
+        self.assertEqual(len([args for args, _ in self.gh_calls if args[1:3] == ('pr', 'create')]), 2)
 
     def test_full_change_default_writes_complete_archivable_delta(self) -> None:
         write.draft_one = lambda item, unit, specs, key, model, feedback="": {

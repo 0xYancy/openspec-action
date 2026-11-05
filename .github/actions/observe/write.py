@@ -8,9 +8,8 @@
          DEEPSEEK_API_KEY / DEEPSEEK_MODEL（为未登记的行为变化起草主 spec 改动）
 
 - 只修改 openspec/changes/** 与 openspec/specs/**；任何其他路径的改动都会被撤销并在报告中列出。
-- 未登记的行为变化写进 Store 唯一打开的补登汇总 PR（obs:patch）：按顺序基于汇总分支当前的主 spec 起草，
-  delta 直接并入主 spec 并写 changelog，每个单元一个提交，PR 中不含 change；起草失败的单元单独开空壳补登 PR。
-- 从不合并 PR，从不推送主分支。
+- 未登记的行为变化统一生成完整 Change，隔离预演归档，只提交提案、delta 与来源记录。
+- 此步骤不推送主分支；独立 autopilot 在主动校验后经 GitHub PR 合入。
 """
 from __future__ import annotations
 
@@ -107,7 +106,7 @@ def link_body(change: dict, link: dict, store_repo: str) -> str:
     )
     diffs = "\n".join(f"- **{d['scenario']}**（{d['pr']}）：{d['detail']}" for d in link["diffs"]) or "未发现差异。"
     return f"""## 摘要
-观察到 {len(link['prs'])} 个已合并 PR 实现了 `{change['change']}`（{change.get('title') or ''}）。合并本 PR 后，change 状态改为已实现，关联记录写入 `implementations`。
+观察到 {len(link['prs'])} 个已合并 PR 实现了 `{change['change']}`（{change.get('title') or ''}）。关联记录写入 `implementations`；自动合入任务将在本 PR 内归档 Change、同步主 spec，通过校验后自动合入。
 
 ## 关联的实现 PR
 | PR | 合并时间 | 匹配依据 | 置信度 |
@@ -119,7 +118,7 @@ def link_body(change: dict, link: dict, store_repo: str) -> str:
 
 ## 审阅提示
 - 置信度为「低」的关联请重点确认。
-- 审阅后点击 Ready for review 运行 Store 检查，检查通过后再合并。
+- 自动合入任务主动运行 Store 检查，通过后自动合并；失败时保留 PR 并通知。
 - 匹配错误时关闭本 PR 并加上 `{REJECTED_LABEL}` 标签，之后不会再提出相同的关联。
 - 已经验证过、不需要再测试时，加上 `{ARCHIVE_LABEL}` 标签：本分支会追加归档提交，合并本 PR 即直接完成验收归档。
 """
@@ -353,66 +352,27 @@ def prepare_patch_branch(store: Path, args, patch_pr: dict | None, now: dt.datet
 
 def apply_patch_rollup(store: Path, args, items: list[dict], units: dict[str, dict], patch_pr: dict | None,
                        now: dt.datetime) -> tuple[list[str], list[tuple[dict, str]]]:
-    """按顺序把未登记的行为变化补登进汇总分支。返回 (报告行, [(退回空壳补登的单元, 原因)])。"""
+    """为每个未登记实现起草完整 Change。保留旧接口以兼容转换与现有调用。"""
+    # 所有行为补登均保留完整 Change；旧汇总函数只负责起草与预演，不写主规范。
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
-    if not key:
-        return [], [(item, "缺少 DEEPSEEK_API_KEY") for item in items]
-    branch, pr, note = prepare_patch_branch(store, args, patch_pr, now)
-    applied, fallbacks = [], []
+    drafts = []
     for item in items:
-        reason = ""
+        reason = "缺少 DEEPSEEK_API_KEY" if not key else ""
         draft = {}
-        for attempt in range(2):
-            try:
-                if attempt:
+        if key:
+            for attempt in range(2):
+                try:
                     draft = draft_one(item, units.get(item["pr"]) or {}, load_capabilities(store), key, model, feedback=reason)
-                else:
-                    draft = draft_one(item, units.get(item["pr"]) or {}, load_capabilities(store), key, model)
-            except Exception as error:
-                draft = {"error": f"起草失败：{type(error).__name__}"}
-            reason = draft.get("error", "")
-            if not reason:
-                if draft.get("backfill_mode") == "change":
-                    reason = preflight(store, f"obs-backfill-{ref_suffix(item['pr'])}", [item], draft, now)
-                else:
-                    summaries, reason = merge_draft(store, item, draft, now)
-            if not reason:
-                break
-            run(store, "git", "reset", "-q", "--hard")
-            run(store, "git", "clean", "-fdq", "--", "openspec")
-        if reason or draft.get("backfill_mode") == "change":
-            item = {**item, "_draft": draft, "_unit": units.get(item["pr"]) or {}}
-            fallbacks.append((item, reason))
-            continue
-        save_record(store, [item], draft, "spec")
-        allowed, denied = guarded_paths(store)
-        if denied:
-            revert_paths(store, denied)
-        run(store, "git", "add", "--", *allowed)
-        run(store, "git", "commit", "-m", f"obs: 补登 {item['pr']}：{draft.get('title') or item['title']}"[:120])
-        applied.append((item, draft, summaries))
-    if not applied:
-        return [], fallbacks
-    # obs/* 分支只由自动化写入；重放到最新主分支后需要覆盖
-    run(store, "git", "push", "--force", "origin", f"HEAD:refs/heads/{branch}")
-    sections = "".join(unit_section(item, draft, summaries) for item, draft, summaries in applied)
-    refs = [item["pr"] for item, _, _ in applied]
-    if pr:
-        view = json.loads(run(store, "gh", "pr", "view", str(pr["number"]), "--json", "body,isDraft"))
-        body = re.sub(r"<!--\s*openspec-obs:.*?-->\s*", "", view["body"] or "", flags=re.S).rstrip() + "\n" + sections
-        body += "\n" + render_marker({"change": None, "kind": "patch", "prs": list(pr.get("prs") or []) + refs})
-        run(store, "gh", "pr", "edit", str(pr["number"]), "--body-file", "-", input_text=body)
-        if not view.get("isDraft"):
-            run(store, "gh", "pr", "ready", str(pr["number"]), "--undo")
-            run(store, "gh", "pr", "comment", str(pr["number"]), "--body",
-                f"实现观察追加了 {len(applied)} 条补登，本 PR 已改回草稿；确认新增内容后重新点击 Ready for review。")
-        url = pr["url"]
-    else:
-        body = patch_header(note) + sections + "\n" + render_marker({"change": None, "kind": "patch", "prs": refs})
-        url = run(store, "gh", "pr", "create", "--draft", "--base", args.base, "--head", branch, "--label", LABEL,
-                  "--label", PATCH_LABEL, "--title", f"obs: 补登汇总（{now:%Y-%m-%d} 起）", "--body-file", "-", input_text=body)
-    return [f"- {item['pr']} → {url}（补登汇总，已更新主 spec：{'、'.join(summaries)}）" for item, _, summaries in applied], fallbacks
+                    reason = draft.get("error", "")
+                    if not reason:
+                        reason = preflight(store, f"obs-backfill-{ref_suffix(item['pr'])}", [item], draft, now)
+                except Exception as error:
+                    reason = f"起草失败：{type(error).__name__}"
+                if not reason:
+                    break
+        drafts.append(({**item, "_draft": draft, "_unit": units.get(item["pr"]) or {}}, reason))
+    return [], drafts
 
 
 def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids: set[str], reason: str) -> str:
@@ -453,8 +413,7 @@ def apply_unregistered(store: Path, args, item: dict, now: dt.datetime, used_ids
             + default_meta + "\n"
             + (f"**待处理校验问题**：{reason}；本 PR 保持草稿，不自动归档。\n\n" if reason else
                "已通过 Change 校验、归档试合并和主 spec 严格校验。\n\n")
-            + "标签 `obs:as-spec` 可转为直接更新主 spec；`obs:as-change` 可转回完整 Change。"
-            "审阅后 Ready for review 并通过 Store 检查，验收通过可使用 `obs:archive`。\n\n" + render_marker(marker))
+            + "补登统一保留完整 Change；在本 PR 自动归档并同步主 spec，通过校验后自动合入，失败时保留草稿并通知。\n\n" + render_marker(marker))
     url = run(store, 'gh', 'pr', 'create', '--draft', '--base', args.base, '--head', branch, '--label', LABEL,
               '--label', 'obs:change', '--title', f"obs: 补登 Change {draft.get('title') or item['title']}"[:120], '--body-file', '-', input_text=body)
     return f"- {item['pr']} → {url}（完整补登 Change{('，待修正：' + reason) if reason else '，归档预演通过'}）"
@@ -476,6 +435,7 @@ def main() -> int:
     now = dt.datetime.now(dt.timezone.utc)
 
     checked, notes = validate(result, data)
+    failed = False
     changes = {c["change"]: c for c in data["changes"]}
 
     # 无需起草的判断写入缓存，下次运行不再交给模型。
@@ -490,7 +450,7 @@ def main() -> int:
             target = "（未合并，将在其 PR 评论）" if changes[link["change"]].get("draft_pr") else ""
             lines.append(f"- 将关联 `{link['change']}`{target}：" + "、".join(f"{p['pr']}（{p['confidence']}，{p['basis']}）" for p in link["prs"]))
             lines += [f"  - 差异：{d['scenario']}（{d['pr']}）{d['detail']}" for d in link["diffs"]]
-        target = f"追加到补登汇总 PR #{data['patch_pr']['number']}" if data.get("patch_pr") else "新开补登汇总 PR"
+        target = "新开完整 Change PR"
         lines += [f"- 将补登未登记行为变化（{target}）：{u['pr']}：{u['behavior']}" for u in checked["unregistered"]]
     else:
         if checked["links"] or checked["unregistered"]:
@@ -506,6 +466,7 @@ def main() -> int:
                 else:
                     lines.append(apply_link(store, args, change, link, data["open_drafts"].get(link["change"]), now))
             except subprocess.CalledProcessError as error:
+                failed = True
                 lines.append(f"- `{link['change']}` 写入失败：{(error.stderr or '').strip()[:300]}")
         fallbacks: list[tuple[dict, str]] = []
         if checked["unregistered"]:
@@ -514,12 +475,16 @@ def main() -> int:
                 rollup, fallbacks = apply_patch_rollup(store, args, checked["unregistered"], units, data.get("patch_pr"), now)
                 lines += rollup
             except subprocess.CalledProcessError as error:
+                failed = True
                 lines.append(f"- 补登汇总写入失败：{(error.stderr or '').strip()[:300]}")
         used_ids: set[str] = set()
         for item, reason in fallbacks:
             try:
                 lines.append(apply_unregistered(store, args, item, now, used_ids, reason))
+                if reason:
+                    failed = True
             except subprocess.CalledProcessError as error:
+                failed = True
                 lines.append(f"- {item['pr']} 写入失败：{(error.stderr or '').strip()[:300]}")
     lines += [f"- 无需起草：{n['pr']}（{n['reason']}）" for n in checked["no_draft"]]
     lines += [f"- {note}" for note in notes]
@@ -527,7 +492,7 @@ def main() -> int:
         lines.append("本次没有需要处理的已合并 PR。")
     Path(args.report).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -282,7 +282,7 @@ runs:
         COUNT=$(echo "$PAGES" | grep -c . || true)
         {
           echo "## 摘要"
-          echo "本次更新 $COUNT 个页面（草稿 ${{ steps.status.outputs.run }}）。合并本 PR 即发布，关闭即放弃。"
+          echo "本次更新 $COUNT 个页面（草稿 ${{ steps.status.outputs.run }}）。已通过页面结构与出处门槛，由 Store 自动合入任务校验并合入发布。"
           echo
           echo "## 预览"
           if [ -n "${{ inputs.vercel-token }}" ]; then echo "PREVIEW_PLACEHOLDER"; else echo "未配置 Vercel，跳过预览。"; fi
@@ -317,7 +317,7 @@ runs:
           gh pr edit "$EXISTING" --body-file "$W/body.md"; URL="$EXISTING"
         else
           URL=$(gh pr create --draft --base "${{ github.event.repository.default_branch }}" --head "$BRANCH" \
-            --title "wiki: ${{ steps.facts.outputs.store-id }} $COUNT 个页面待发布" --body-file "$W/body.md")
+            --title "wiki: ${{ steps.facts.outputs.store-id }} $COUNT 个页面更新" --body-file "$W/body.md")
         fi
         echo "url=$URL" >> "$GITHUB_OUTPUT"
 

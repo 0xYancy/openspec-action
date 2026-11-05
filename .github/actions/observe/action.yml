@@ -39,7 +39,7 @@ inputs:
     required: false
     default: '14'
   openspec-version:
-    description: 'OpenSpec CLI 版本（与 framework.lock 一致），用于把未登记变化的 delta 并入主 spec'
+    description: 'OpenSpec CLI 版本（与 framework.lock 一致），用于在隔离副本预演 Change 归档'
     required: false
     default: '1.12.0'
 
@@ -113,7 +113,7 @@ runs:
       if: steps.prepare.outputs.to-match != '0' && inputs.dry-run != 'true'
       shell: bash
       run: |
-        # 只有需要补登未登记的行为变化时才用到（把 delta 并入主 spec）
+        # 只在隔离副本中校验补登 Change、预演归档，不提交主 spec 改动
         if jq -e '(.unregistered // []) | length > 0' "$RUNNER_TEMP/openspec-obs/out/result.json" >/dev/null 2>&1; then
           npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
           openspec --version
@@ -150,6 +150,17 @@ runs:
         name: openspec-observe-signals
         path: ${{ runner.temp }}/openspec-obs/out/signals.json
         retention-days: 14
+
+    - name: Report read failures
+      if: always()
+      shell: bash
+      run: |
+        FILE="$RUNNER_TEMP/openspec-obs/out/summary.json"
+        [ -f "$FILE" ] || exit 0
+        if jq -e '(.skipped_orgs | length > 0) or any(.repos[]; .ok == false)' "$FILE" >/dev/null; then
+          echo "::error::部分实现仓读取失败，详见运行摘要；下一轮重试。"
+          exit 1
+        fi
 
     - name: Summary
       if: always()

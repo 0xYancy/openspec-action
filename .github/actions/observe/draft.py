@@ -176,7 +176,7 @@ def draft_one(item: dict, unit: dict, existing_text: dict[str, str], key: str, m
         if reason:
             return {**draft, "error": f"重写后仍不合法：{reason}"}
     return {
-        "backfill_mode": "change" if new else (draft.get("backfill_mode") if draft.get("backfill_mode") in ("change", "spec") else "spec"),
+        "backfill_mode": "change",
         "mode_reason": str(draft.get("mode_reason") or ("新增业务能力，保留独立需求记录" if new else "已有能力的小范围规则补正")),
         "title": str(draft.get("title") or "")[:60],
         "summary": str(draft.get("summary") or ""),

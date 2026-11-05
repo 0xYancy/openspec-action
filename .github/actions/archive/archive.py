@@ -165,6 +165,7 @@ def main() -> int:
     for name in ("--store", "--store-repo", "--change", "--body"):
         parser.add_argument(name, required=True)
     parser.add_argument("--pr", type=int)
+    parser.add_argument("--observed", action="store_true", help="观察到已上线实现后在 PR 内自动归档")
     args = parser.parse_args()
     store = Path(args.store).resolve()
     change_dir = store / "openspec" / "changes" / args.change
@@ -178,7 +179,7 @@ def main() -> int:
 
     specs = sorted((change_dir / "specs").glob("*/spec.md")) if (change_dir / "specs").is_dir() else []
     summaries = {spec.parent.name: delta_summary(spec) for spec in specs}
-    diffs = diffs_from_obs(args.store_repo, args.change, args.pr)
+    diffs = [] if args.observed else diffs_from_obs(args.store_repo, args.change, args.pr)
     proposal = (change_dir / "proposal.md").read_text(encoding="utf-8") if (change_dir / "proposal.md").is_file() else ""
 
     result = subprocess.run(["openspec", "archive", args.change, "--yes"], cwd=store, capture_output=True, text=True)
@@ -226,6 +227,8 @@ def main() -> int:
     summary = (f"需求负责人加上了 `obs:archive` 标签，本 PR 的分支已追加归档提交：合并本 PR 即完成 `{args.change}`（{archived_meta.get('title') or ''}）的验收归档，"
                "delta 并入主 specs，change 状态为已归档，不再经过「已实现 / 测试中」。" if args.pr else
                f"需求侧验收通过，归档 `{args.change}`（{archived_meta.get('title') or ''}）。合并本 PR 后，delta 并入主 specs，change 状态为已归档。")
+    if args.observed:
+        summary = f"实现观察确认已有合入实现，本 PR 已自动归档 `{args.change}`（{archived_meta.get('title') or ''}）：delta 并入主 spec，Change 完整保留在归档目录，状态为已归档。校验通过后自动合入。"
     body = f"""## {"验收归档（obs:archive）" if args.pr else "摘要"}
 {summary}
 
@@ -238,7 +241,7 @@ def main() -> int:
 {impl_lines or '未观察到关联的实现 PR（允许直接归档）。'}
 
 ## 尚未处理的差异
-{chr(10).join(diffs) if diffs else '观察中没有记录差异。'}
+{'详见本 PR 的实现观察记录；本次根据已合入实现自动归档。' if args.observed else (chr(10).join(diffs) if diffs else '观察中没有记录差异。')}
 
 请逐条确认上述差异是否接受；需要调整需求时，在本 PR 中直接修改对应的主 spec。确认后点击 Ready for review 运行 Store 检查，通过后合并。
 
@@ -246,6 +249,8 @@ def main() -> int:
 {chr(10).join(f'- `openspec/specs/{cap}/changelog.md` 追加一条' for cap in active if summaries[cap]) or '无'}
 {chr(10).join(f'- `{cap}` 已退役，删除 `openspec/specs/{cap}/`' for cap in retired)}
 """
+    if args.observed:
+        body = body.replace("请逐条确认上述差异是否接受；需要调整需求时，在本 PR 中直接修改对应的主 spec。确认后点击 Ready for review 运行 Store 检查，通过后合并。", "自动合入任务将主动校验上述归档结果；失败时保留 PR，并通过 Slack 通知原因。")
     Path(args.body).write_text(body, encoding="utf-8")
     print(f"已归档到 {archived_dir.relative_to(store)}")
     return 0

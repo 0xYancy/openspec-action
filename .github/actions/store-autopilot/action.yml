@@ -1,0 +1,55 @@
+name: OpenSpec Store Autopilot
+description: 主动校验并自动合入 Store 观察与 Wiki PR，通知动作和错误，重试合入后需求投递。
+inputs:
+  store-token:
+    default: ${{ github.token }}
+  slack-bot-token:
+    required: true
+  issue-token:
+    default: ''
+  issue-tokens:
+    default: ''
+  deepseek-api-key:
+    default: ''
+  openrouter-api-key:
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install validation tools
+      shell: bash
+      run: |
+        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        npm install -g '@fission-ai/openspec@1.12.0' >/dev/null
+    - name: Notify source workflow failure
+      if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'skipped'
+      shell: bash
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        RUN_URL: ${{ github.event.workflow_run.html_url }}
+        SOURCE_NAME: ${{ github.event.workflow_run.name }}
+        SOURCE_RESULT: ${{ github.event.workflow_run.conclusion }}
+      run: |
+        python3 "${{ github.action_path }}/autopilot.py" --alert "$SOURCE_NAME 运行结果：$SOURCE_RESULT。已保留产物，下一轮重试；详情见运行记录。"
+    - name: Validate and merge automation PRs
+      id: pilot
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        OPENSPEC_ISSUE_TOKEN: ${{ inputs.issue-token }}
+        OPENSPEC_ISSUE_TOKENS: ${{ inputs.issue-tokens }}
+        DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        OPENSPEC_TELEMETRY: '0'
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        BASE: ${{ github.event.repository.default_branch }}
+      run: python3 "${{ github.action_path }}/autopilot.py" --base "$BASE"
+    - name: Notify autopilot failure
+      if: failure() && steps.pilot.outputs.handled-errors != 'true'
+      shell: bash
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        python3 "${{ github.action_path }}/autopilot.py" --alert "自动合入任务未完成。未通过校验的 PR 保持打开；合入后的同步失败将在下一轮重试。详情见运行记录。"
