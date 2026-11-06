@@ -134,6 +134,83 @@ class FlowTest(unittest.TestCase):
 
 
 
+class PendingTest(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, GH_TOKEN='test'); self.env.start()
+        self.pilot = a.Pilot('o/s', 'main', Path('.'))
+        self.open, self.closed, self.comments = [], [], []
+        self.pilot.pages = lambda path: (self.open if 'state=open' in path else
+                                        self.closed if 'state=closed' in path else self.comments)
+
+    def tearDown(self):
+        self.env.stop()
+
+    def test_no_pr_or_only_human_pr_is_not_pending(self):
+        self.assertFalse(self.pilot.pending())
+        p = pr(); p['user'] = {'login': 'human'}
+        self.open = [p]
+        self.assertFalse(self.pilot.pending())
+
+    def test_automation_pr_is_pending_without_mutations_or_tools(self):
+        self.open = [pr()]
+        with patch.object(a, 'run') as run, patch.object(a, 'slack') as slack:
+            self.assertTrue(self.pilot.pending())
+        run.assert_not_called(); slack.assert_not_called()
+
+    def test_closed_unmerged_and_untracked_historical_pr_are_not_pending(self):
+        self.closed = [pr(merged_at=None), pr(merged_at='now', merge_commit_sha='merge')]
+        self.assertFalse(self.pilot.pending())
+
+    def test_merged_pr_with_unfinished_followup_remains_pending(self):
+        self.closed = [pr(merged_at='now', merge_commit_sha='merge')]
+        self.comments = [{'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:opened -->'}]
+        self.assertTrue(self.pilot.pending())
+        self.comments.append({'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:followup:merge -->'})
+        self.assertFalse(self.pilot.pending())
+
+    def test_human_cannot_create_or_complete_recovery_markers(self):
+        self.closed = [pr(merged_at='now', merge_commit_sha='merge')]
+        self.comments = [{'user': {'login': 'human'}, 'body': '<!-- openspec-autopilot:opened -->'}]
+        self.assertFalse(self.pilot.pending())
+        self.comments.append({'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:opened -->'})
+        self.comments.append({'user': {'login': 'human'}, 'body': '<!-- openspec-autopilot:followup:merge -->'})
+        self.assertTrue(self.pilot.pending())
+
+    def test_api_failure_is_not_treated_as_an_empty_queue(self):
+        self.pilot.pages = lambda path: (_ for _ in ()).throw(RuntimeError('API unavailable'))
+        with self.assertRaisesRegex(RuntimeError, 'API unavailable'):
+            self.pilot.pending()
+
+    def test_check_cli_writes_skip_output_and_does_not_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output, summary = Path(tmp)/'output', Path(tmp)/'summary'
+            with patch.dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary)), \
+                 patch('sys.argv', ['autopilot.py', '--repo', 'o/s', '--check']), \
+                 patch.object(a.Pilot, 'pending', return_value=False), patch.object(a.Pilot, 'main') as main:
+                self.assertEqual(a.main(), 0)
+            self.assertEqual(output.read_text(), 'pending=false\n')
+            self.assertIn('已跳过', summary.read_text())
+            main.assert_not_called()
+
+    def test_check_cli_can_import_without_site_packages(self):
+        import subprocess
+        result = subprocess.run(['python3', '-S', str(ROOT/'.github/actions/store-autopilot/autopilot.py'), '--help'],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--check', result.stdout)
+
+    def test_action_gate_skips_tools_and_merge_but_keeps_failure_alerts(self):
+        import yaml
+        data = yaml.safe_load((ROOT/'.github/actions/store-autopilot/action.yml').read_text())
+        steps = {s['name']: s for s in data['runs']['steps']}
+        expected = "inputs.check-only != 'true' && steps.pending.outputs.pending == 'true'"
+        for name in ['Install validation tools', 'Validate and merge automation PRs']:
+            self.assertEqual(steps[name]['if'], expected)
+        self.assertIn('--check', steps['Check pending automation PRs']['run'])
+        self.assertNotIn('pending.outputs', steps['Notify source workflow failure']['if'])
+        self.assertIn('failure()', steps['Notify autopilot failure']['if'])
+
+
 class ArchiveIntegrationTest(unittest.TestCase):
     SPEC = '''# Example Specification
 

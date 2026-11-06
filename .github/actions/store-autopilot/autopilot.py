@@ -317,6 +317,20 @@ class Pilot:
         # 不在生产者仍可能追加提交时归档／合入；workflow_run 或下一轮恢复会继续处理。
         return runs.get('total_count', 0) > 100 or any(r.get('name') in names for r in runs.get('workflow_runs', []))
 
+    def needs_followup(self, pr: dict) -> bool:
+        if not pr.get('merged_at') or not eligible(pr, self.repo, self.base):
+            return False
+        notices = self.notices(pr)
+        return 'opened' in notices and 'followup:' + pr.get('merge_commit_sha', '') not in notices
+
+    def pending(self) -> bool:
+        """只读检查，不安装工具、不拉取仓库，也不发送空检查通知。"""
+        if any(eligible(pr, self.repo, self.base)
+               for pr in self.pages('/pulls?state=open&sort=created&direction=asc')):
+            return True
+        return any(self.needs_followup(pr)
+                   for pr in self.pages('/pulls?state=closed&sort=updated&direction=desc'))
+
     def main(self) -> int:
         failures = 0
         processed = set()
@@ -340,10 +354,7 @@ class Pilot:
                 self.notify(current, f'failed:{current["head"]["sha"]}:{digest}', '⚠️ 自动化处理受阻', str(error))
         # 恢复「已合入但发通知／投递时中断」的运行。手动 PR 和历史无记录的 PR 不处理。
         for pr in self.pages('/pulls?state=closed&sort=updated&direction=desc'):
-            if pr['number'] in processed or not pr.get('merged_at') or not eligible(pr, self.repo, self.base):
-                continue
-            notices = self.notices(pr)
-            if 'opened' not in notices or 'followup:' + pr.get('merge_commit_sha', '') in notices:
+            if pr['number'] in processed or not self.needs_followup(pr):
                 continue
             try:
                 pr = self.api(f'/pulls/{pr["number"]}')
@@ -364,11 +375,24 @@ def main() -> int:
     parser.add_argument('--base', default='main')
     parser.add_argument('--store', default='.')
     parser.add_argument('--alert', default='')
+    parser.add_argument('--check', action='store_true', help='只读检查是否有待处理 PR 或合入后同步')
     args = parser.parse_args()
     if args.alert:
         slack(card(args.repo, '⚠️ Store 自动化运行异常', args.alert, os.environ['RUN_URL']))
         return 0
-    return Pilot(args.repo, args.base, Path(args.store).resolve()).main()
+    pilot = Pilot(args.repo, args.base, Path(args.store).resolve())
+    if args.check:
+        pending = pilot.pending()
+        if os.environ.get('GITHUB_OUTPUT'):
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                output.write('pending=' + str(pending).lower() + '\n')
+        message = '发现待处理自动化 PR 或合入后同步，将继续自动处理。' if pending else '暂无待处理自动化 PR 或合入后同步，已跳过自动合入。'
+        print(message)
+        if os.environ.get('GITHUB_STEP_SUMMARY'):
+            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                summary.write(message + '\n')
+        return 0
+    return pilot.main()
 
 if __name__ == '__main__':
     sys.exit(main())

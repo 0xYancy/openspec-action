@@ -1,6 +1,12 @@
 name: OpenSpec Store Autopilot
 description: 主动校验并自动合入 Store 观察与 Wiki PR，通知动作和错误，重试合入后需求投递。
 inputs:
+  check-only:
+    description: 只读检查待办，不安装校验工具或执行合入
+    default: 'false'
+  notify-source-failure:
+    description: 上游异常由轻量检查通知，合入 job 不重复通知
+    default: 'true'
   store-token:
     default: ${{ github.token }}
   slack-bot-token:
@@ -13,16 +19,15 @@ inputs:
     default: ''
   openrouter-api-key:
     default: ''
+outputs:
+  pending:
+    description: 是否有待处理的自动化 PR 或合入后同步
+    value: ${{ steps.pending.outputs.pending }}
 runs:
   using: composite
   steps:
-    - name: Install validation tools
-      shell: bash
-      run: |
-        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
-        npm install -g '@fission-ai/openspec@1.12.0' >/dev/null
     - name: Notify source workflow failure
-      if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'skipped'
+      if: inputs.notify-source-failure != 'false' && github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'skipped'
       shell: bash
       env:
         SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
@@ -31,7 +36,21 @@ runs:
         SOURCE_RESULT: ${{ github.event.workflow_run.conclusion }}
       run: |
         python3 "${{ github.action_path }}/autopilot.py" --alert "$SOURCE_NAME 运行结果：$SOURCE_RESULT。已保留产物，下一轮重试；详情见运行记录。"
+    - name: Check pending automation PRs
+      id: pending
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.store-token }}
+        BASE: ${{ github.event.repository.default_branch }}
+      run: python3 "${{ github.action_path }}/autopilot.py" --base "$BASE" --check
+    - name: Install validation tools
+      if: inputs.check-only != 'true' && steps.pending.outputs.pending == 'true'
+      shell: bash
+      run: |
+        python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        npm install -g '@fission-ai/openspec@1.12.0' >/dev/null
     - name: Validate and merge automation PRs
+      if: inputs.check-only != 'true' && steps.pending.outputs.pending == 'true'
       id: pilot
       shell: bash
       env:

@@ -12,7 +12,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import yaml
 
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 
@@ -28,6 +27,7 @@ PR_REF = re.compile(r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$")
 
 
 def load_yaml(path: Path) -> dict:
+    import yaml
     if not path.is_file():
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -253,4 +253,5 @@ def revert_paths(store: Path, paths: list[str]) -> None:
 
 
 def dump_yaml(data: dict) -> str:
+    import yaml
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=1000)
