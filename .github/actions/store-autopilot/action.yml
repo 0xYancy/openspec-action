@@ -1,5 +1,5 @@
 name: OpenSpec Store Autopilot
-description: 主动校验并自动合入 Store 观察与 Wiki PR，通知动作和错误，重试合入后需求投递。
+description: 主动校验并自动合入 Store 观察与 Wiki PR，仅通知最终合入与异常，静默重试合入后需求投递。
 inputs:
   check-only:
     description: 只读检查待办，不安装校验工具或执行合入

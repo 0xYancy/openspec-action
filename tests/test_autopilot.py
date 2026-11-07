@@ -76,6 +76,24 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(merge[2],{'sha':'head','merge_method':'squash'})
         self.assertTrue(any(c.args[1:4] == ('gh','pr','ready') for c in run.call_args_list))
         self.assertIn('merged',self.events); self.assertIn('followup',self.events)
+        self.assertEqual([e for e in self.events if isinstance(e, str) and e != 'validated'], ['merged', 'followup'])
+        self.assertIn('managed', self.marks)
+
+    def test_complete_success_sends_one_final_card_and_silently_syncs_issue(self):
+        self.pilot.notify=a.Pilot.notify.__get__(self.pilot)
+        self.pilot.followup=a.Pilot.followup.__get__(self.pilot)
+        self.pilot.validate=lambda p,k:None
+        self.pilot.pages=lambda path:[]
+        with patch.object(a,'run',return_value='before') as run, \
+             patch.object(a,'slack') as slack, \
+             patch.object(a,'summarize',return_value=['更新确认金额']):
+            self.pilot.process(pr(), 'observe')
+        slack.assert_called_once()
+        payload=slack.call_args.args[0]
+        self.assertIn('自动化 PR 已合入',payload['text'])
+        self.assertIn('更新确认金额',payload['text'])
+        self.assertIn('followup:merged', self.marks)
+        self.assertFalse(any('--notify' in call.args for call in run.call_args_list))
 
     def test_failed_validation_never_marks_ready_or_merges(self):
         self.pilot.validate=lambda p,k:(_ for _ in ()).throw(RuntimeError('invalid'))
@@ -84,11 +102,11 @@ class FlowTest(unittest.TestCase):
         run.assert_not_called()
         self.assertFalse(any(isinstance(e,tuple) and e[0].endswith('/merge') for e in self.events))
 
-    def test_base_changed_after_validation_stops_merge(self):
+    def test_base_changed_after_validation_silently_retries(self):
         self.pilot.validate=lambda p,k:None
         self.pilot.validated_base='old'
-        with self.assertRaisesRegex(RuntimeError,'主分支'):
-            self.pilot.process(pr(),'observe')
+        self.pilot.process(pr(),'observe')
+        self.assertNotIn('merged', self.events)
         self.assertFalse(any(isinstance(e,tuple) and e[0].endswith('/merge') for e in self.events))
 
     def test_existing_notice_is_not_resent(self):
@@ -98,26 +116,90 @@ class FlowTest(unittest.TestCase):
             self.pilot.notify(pr(),'opened','x','y')
         slack.assert_not_called()
 
-    def test_followup_retries_only_failed_stage(self):
+    def test_followup_does_not_resend_completed_issues_or_requirement_notifications(self):
         self.pilot.followup=a.Pilot.followup.__get__(self.pilot)
-        p=pr(merge_commit_sha='merged')
         self.marks={'issues:merged'}
-        with patch.object(a,'run',return_value='before') as run:
-            self.pilot.followup(p)
-        calls=[c for c in run.call_args_list if c.args[1] == 'python3']
-        self.assertEqual(len(calls),1)
-        self.assertIn('--notify',calls[0].args)
+        with patch.object(a,'run') as run:
+            self.pilot.followup(pr(merge_commit_sha='merged'))
+        run.assert_not_called()
         self.assertIn('followup:merged',self.marks)
 
-    def test_issue_failure_does_not_block_notification_and_remains_retryable(self):
+    def test_followup_syncs_issues_without_a_second_slack_notification(self):
+        self.pilot.followup=a.Pilot.followup.__get__(self.pilot)
+        with patch.object(a,'run',return_value='before') as run, patch.object(a,'slack') as slack:
+            self.pilot.followup(pr(merge_commit_sha='merged'))
+        calls=[c for c in run.call_args_list if c.args[1] == 'python3']
+        self.assertEqual(len(calls),1)
+        self.assertNotIn('--notify', calls[0].args)
+        slack.assert_not_called()
+        self.assertIn('issues:merged',self.marks)
+        self.assertIn('followup:merged',self.marks)
+
+    def test_issue_failure_remains_retryable_without_marking_success(self):
         self.pilot.followup=a.Pilot.followup.__get__(self.pilot)
         def run(work,*args):
-            if args[0]=='python3' and '--notify' not in args: raise RuntimeError('issue failure')
+            if args[0]=='python3': raise RuntimeError('issue failure')
             return 'before'
         with patch.object(a,'run',side_effect=run), self.assertRaisesRegex(RuntimeError,'下轮自动重试'):
             self.pilot.followup(pr(merge_commit_sha='merged'))
-        self.assertIn('notify:merged',self.marks)
+        self.assertNotIn('issues:merged',self.marks)
         self.assertNotIn('followup:merged',self.marks)
+
+    def test_normal_check_waits_are_silent_but_completed_failures_are_errors(self):
+        original_api = self.pilot.api
+        checks, statuses = [], []
+        def api(path, *args):
+            if '/check-runs?' in path: return {'total_count': len(checks), 'check_runs': checks}
+            if path.endswith('/status'): return {'statuses': statuses}
+            return original_api(path, *args)
+        self.pilot.api=api
+        self.pilot.validate=lambda p,k:None
+        checks.append({'name':'Other check','status':'in_progress','conclusion':None})
+        self.pilot.process(pr(), 'observe')
+        self.assertNotIn('merged',self.events)
+        checks.clear(); statuses.append({'context':'external', 'state':'pending'})
+        self.pilot.process(pr(), 'observe')
+        self.assertNotIn('merged',self.events)
+        statuses.clear(); checks.append({'name':'Other check','status':'completed','conclusion':'failure'})
+        with self.assertRaisesRegex(RuntimeError,'其他检查失败'):
+            self.pilot.process(pr(), 'observe')
+        checks.clear(); statuses.append({'context':'external', 'state':'failure'})
+        with self.assertRaisesRegex(RuntimeError,'其他状态检查失败'):
+            self.pilot.process(pr(), 'observe')
+
+    def test_same_failure_alert_is_sent_only_once_across_retries(self):
+        self.pilot.notify=a.Pilot.notify.__get__(self.pilot)
+        self.pilot.pages=lambda path:[pr()] if 'state=open' in path else []
+        self.pilot.writer_running=lambda kind:False
+        self.pilot.process=lambda *args:(_ for _ in ()).throw(RuntimeError('invalid'))
+        original_api=self.pilot.api
+        self.pilot.api=lambda path,*args:pr(merged=False) if path=='/pulls/1' else original_api(path,*args)
+        with patch.object(a,'slack') as slack:
+            self.assertEqual(self.pilot.main(),1)
+            self.assertEqual(self.pilot.main(),1)
+        slack.assert_called_once()
+
+    def test_merge_notification_is_not_repeated_when_recovering_issue_sync(self):
+        self.pilot.notify=a.Pilot.notify.__get__(self.pilot)
+        self.pilot.pages=lambda path:[pr(merged_at='now', merge_commit_sha='merged')] if 'state=closed' in path else []
+        self.marks={'managed','merged'}
+        with patch.object(a,'slack') as slack:
+            self.assertEqual(self.pilot.main(),0)
+        slack.assert_not_called()
+        self.assertIn('followup',self.events)
+
+    def test_first_and_recovery_followup_failure_share_one_alert(self):
+        self.pilot.notify=a.Pilot.notify.__get__(self.pilot)
+        self.pilot.writer_running=lambda kind:False
+        self.marks={'managed','merged'}
+        self.pilot.pages=lambda path:[pr()] if 'state=open' in path else []
+        self.pilot.process=lambda *args:(_ for _ in ()).throw(RuntimeError('issue failed'))
+        with patch.object(a,'slack') as slack:
+            self.assertEqual(self.pilot.main(),1)
+            self.pilot.pages=lambda path:[pr(merged_at='now',merge_commit_sha='merged')] if 'state=closed' in path else []
+            self.pilot.followup=lambda *args:(_ for _ in ()).throw(RuntimeError('issue failed'))
+            self.assertEqual(self.pilot.main(),1)
+        slack.assert_called_once()
 
     def test_bot_comment_required_for_dedup(self):
         self.pilot.notices=a.Pilot.notices.__get__(self.pilot)
@@ -164,6 +246,13 @@ class PendingTest(unittest.TestCase):
     def test_merged_pr_with_unfinished_followup_remains_pending(self):
         self.closed = [pr(merged_at='now', merge_commit_sha='merge')]
         self.comments = [{'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:opened -->'}]
+        self.assertTrue(self.pilot.pending())
+        self.comments.append({'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:followup:merge -->'})
+        self.assertFalse(self.pilot.pending())
+
+    def test_quiet_managed_pr_recovers_without_an_opened_notification(self):
+        self.closed = [pr(merged_at='now', merge_commit_sha='merge')]
+        self.comments = [{'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:managed -->'}]
         self.assertTrue(self.pilot.pending())
         self.comments.append({'user': {'login': a.BOT}, 'body': '<!-- openspec-autopilot:followup:merge -->'})
         self.assertFalse(self.pilot.pending())
@@ -267,7 +356,8 @@ The system SHALL show a confirmation before submission and display the amount.
             git(work,'add','-A');git(work,'commit','-m','observe');git(work,'push','origin','obs/change')
             source_sha=git(work,'rev-parse','HEAD')
             p=pr();p['head']['sha']=source_sha;p['body']='<!-- openspec-obs: {"change":"example","prs":["o/d#1"]} -->'
-            pilot=a.Pilot('o/s','main',work);pilot.notify=lambda *args:None
+            notifications=[]
+            pilot=a.Pilot('o/s','main',work);pilot.notify=lambda *args:notifications.append(args)
             def api(path,method='GET',body=None):
                 if method=='PATCH': p['body']=body['body']
                 p['head']['sha']=git(work,'rev-parse','origin/obs/change')
@@ -286,6 +376,7 @@ The system SHALL show a confirmation before submission and display the amount.
             # 重跑保持相同 SHA，不重复归档或重复 changelog。
             again=pilot.prepare_archive(result)
             self.assertEqual(again['head']['sha'],result['head']['sha'])
+            self.assertEqual(notifications, [])
 
     def test_new_backfill_is_archived_in_same_pr(self): self.exercise(False)
     def test_manually_created_change_is_archived_in_same_pr(self): self.exercise(True)

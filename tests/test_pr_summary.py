@@ -90,30 +90,33 @@ class CardTest(unittest.TestCase):
         payload=a.card('o/s','x','完成',PR['html_url'],PR,['<!channel> & data'])
         self.assertIn('&lt;!channel&gt; &amp; data',payload['blocks'][2]['text']['text'])
 
-    def test_created_and_merged_share_summary_without_second_model_call(self):
+    def test_final_merge_summary_is_sent_once_without_an_intermediate_card(self):
         with patch.dict(os.environ, GH_TOKEN='test'):
             pilot=a.Pilot('o/s','main',Path('.'))
-        pilot.notices=lambda p:set();pilot.mark=lambda *args:None;pilot.pages=lambda path:FILES
+        notices=set()
+        pilot.notices=lambda p:set(notices)
+        pilot.mark=lambda p,key,text:notices.add(key)
+        pilot.pages=lambda path:FILES
         with patch.object(a,'summarize',return_value=['更新余额刷新规则']) as summarize,patch.object(a,'slack') as slack:
-            pilot.notify(PR,'opened','创建','等待合入')
             pilot.notify(PR,'merged','合入','已合入发布')
-        self.assertEqual(summarize.call_count,1)
-        self.assertTrue(all('• 更新余额刷新规则' in c.args[0]['text'] for c in slack.call_args_list))
+            pilot.notify(PR,'merged','合入','已合入发布')
+        summarize.assert_called_once();slack.assert_called_once()
+        self.assertIn('• 更新余额刷新规则',slack.call_args.args[0]['text'])
 
     def test_file_read_failure_still_sends_notification(self):
         with patch.dict(os.environ, GH_TOKEN='test'):
             pilot=a.Pilot('o/s','main',Path('.'))
         pilot.notices=lambda p:set();pilot.mark=lambda *args:None
         pilot.pages=lambda path: (_ for _ in ()).throw(RuntimeError('unavailable'))
-        with patch.object(a,'slack') as slack: pilot.notify(PR,'opened','创建','等待合入')
+        with patch.object(a,'slack') as slack: pilot.notify(PR,'merged','合入','已合入发布')
         slack.assert_called_once()
 
     def test_previously_sent_notification_does_not_regenerate_summary(self):
         with patch.dict(os.environ, GH_TOKEN='test'):
             pilot=a.Pilot('o/s','main',Path('.'))
-        pilot.notices=lambda p:{'opened'}
+        pilot.notices=lambda p:{'merged'}
         with patch.object(a,'summarize') as summarize,patch.object(a,'slack') as slack:
-            pilot.notify(PR,'opened','创建','等待合入')
+            pilot.notify(PR,'merged','合入','已合入发布')
         summarize.assert_not_called();slack.assert_not_called()
 
 

@@ -188,7 +188,6 @@ class Pilot:
             finally:
                 subprocess.run(['git', 'worktree', 'remove', '--force', str(work)], cwd=self.work, capture_output=True)
         pr = self.api(f'/pulls/{pr["number"]}')
-        self.notify(pr, 'archived:' + pr['head']['sha'], '📦 观察 Change 已归档', '已在同一 PR 同步主 spec、写入 changelog 并保留归档 Change；继续校验后自动合入。')
         return pr
 
     def validate(self, pr: dict, kind: str) -> None:
@@ -243,38 +242,28 @@ class Pilot:
             'description': '自动合入主动执行 Store 校验', 'target_url': os.environ.get('RUN_URL', pr['html_url'])})
 
     def followup(self, pr: dict) -> None:
-        """GITHUB_TOKEN 合入不会触发 push workflow；同步执行下游，成功后记账，失败在下一轮重试。"""
+        """GITHUB_TOKEN 合入不触发 push workflow；静默同步 Issue，Slack 只发最终合入卡片。"""
         sha = pr['merge_commit_sha']
         key = 'followup:' + sha
-        if key in self.notices(pr):
+        notices = self.notices(pr)
+        if key in notices:
             return
-        run(self.work, 'git', 'fetch', '--quiet', 'origin', self.base)
-        before = run(self.work, 'git', 'rev-parse', sha + '^1')
-        errors = []
-        for notify in (False, True):
-            args = ['python3', str(self.work / 'openspec/scripts/issue-delivery.py'), '--store', str(self.work), '--store-repo', self.repo,
-                    '--before', before, '--sha', sha]
-            if notify:
-                args.append('--notify')
-            stage = ('notify:' if notify else 'issues:') + sha
-            if stage in self.notices(pr):
-                continue
+        stage = 'issues:' + sha
+        if stage not in notices:
+            run(self.work, 'git', 'fetch', '--quiet', 'origin', self.base)
+            before = run(self.work, 'git', 'rev-parse', sha + '^1')
             try:
-                run(self.work, *args)
-                self.mark(pr, stage, '合入后的需求通知已发送。' if notify else '合入后的需求 Issue 已同步。')
-            except Exception as error:
-                errors.append(str(error))
-        if errors:
-            raise RuntimeError('合入成功，但需求 Issue／通知后续处理失败；下轮自动重试')
-        self.mark(pr, key, '合入后的需求投递与通知已完成。')
+                run(self.work, 'python3', str(self.work / 'openspec/scripts/issue-delivery.py'), '--store', str(self.work),
+                    '--store-repo', self.repo, '--before', before, '--sha', sha)
+            except Exception:
+                raise RuntimeError('合入成功，但需求 Issue 同步失败；下轮自动重试') from None
+            self.mark(pr, stage, '合入后的需求 Issue 已同步。')
+        self.mark(pr, key, '合入后的需求投递已完成；Slack 统一使用最终合入卡片。')
 
     def process(self, pr: dict, kind: str) -> None:
-        notices = self.notices(pr)
-        if 'opened' not in notices:
-            self.notify(pr, 'opened', '📝 自动化 PR 已创建', {'observe':'实现观察已整理为 Change，将在本 PR 自动归档、校验并合入。', 'wiki':'Wiki 页面已通过结构与出处校验，将自动合入发布。', 'archive':'验收归档 PR 已生成，将校验归档状态和主 spec 后自动合入。'}[kind])
-            self.mark(pr, 'head:' + pr['head']['sha'], '已记录本次生成的提交。')
-        elif 'head:' + pr['head']['sha'] not in notices:
-            self.notify(pr, 'head:' + pr['head']['sha'], '🔄 自动化 PR 已更新', '新增内容已写入 PR，将针对最新提交重新校验。')
+        # 接管记录用于中断后恢复，与 Slack 通知独立；兼容此前 opened 通知留下的记录。
+        if not {'managed', 'opened'} & self.notices(pr):
+            self.mark(pr, 'managed', '自动合入已接管；正常中间步骤静默，合入或失败时通知。')
         # 迁移旧的直接改主 spec 补登 PR，始终经完整 Change 合入。
         marker = parse_marker(pr.get('body') or '')
         if kind == 'observe' and marker and marker.get('kind') == 'patch':
@@ -282,24 +271,29 @@ class Pilot:
             from backfill import convert_pr
             convert_pr(self.work, self.repo, pr['number'], 'change')
             pr = self.api(f'/pulls/{pr["number"]}')
-            self.notify(pr, 'converted', '🔄 补登已转为 Change', '旧补登 PR 已转换为完整 Change，继续自动校验。')
         if kind == 'observe':
             pr = self.prepare_archive(pr)
             kind = 'archive'
         self.validate(pr, kind)
         base_now = self.api('/git/ref/heads/' + self.base)['object']['sha']
         if base_now != self.validated_base:
-            raise RuntimeError('主分支在校验后已变化，下一轮重新试合并')
+            print(f'PR #{pr["number"]}: 主分支在校验后已变化，下一轮重新试合并')
+            return
         self.status(pr, 'success')
         # GITHUB_TOKEN 产生的 PR workflow 可能等待批准；同名 Store 检查已由本任务主动执行，不依赖那次运行。
         checks = self.api(f'/commits/{pr["head"]["sha"]}/check-runs?filter=latest&per_page=100')
         if checks.get('total_count', 0) > 100:
             raise RuntimeError('检查数量超出上限，拒绝在不完整结果上合入')
-        if any(c.get('status') != 'completed' or c.get('conclusion') not in ('success', 'neutral', 'skipped') for c in checks.get('check_runs', []) if c.get('name') != 'Store 检查'):
-            raise RuntimeError('PR 的其他检查尚未通过，保留 PR 下一轮重试')
+        other_checks = [c for c in checks.get('check_runs', []) if c.get('name') != 'Store 检查']
+        if any(c.get('status') == 'completed' and c.get('conclusion') not in ('success', 'neutral', 'skipped') for c in other_checks):
+            raise RuntimeError('PR 的其他检查失败，保留 PR 下一轮重试')
         status = self.api(f'/commits/{pr["head"]["sha"]}/status')
-        if any(c.get('state') != 'success' for c in status.get('statuses', []) if c.get('context') != 'Store 检查'):
-            raise RuntimeError('PR 的其他状态检查尚未通过，保留 PR 下一轮重试')
+        other_statuses = [c for c in status.get('statuses', []) if c.get('context') != 'Store 检查']
+        if any(c.get('state') not in ('success', 'pending') for c in other_statuses):
+            raise RuntimeError('PR 的其他状态检查失败，保留 PR 下一轮重试')
+        if any(c.get('status') != 'completed' for c in other_checks) or any(c.get('state') == 'pending' for c in other_statuses):
+            print(f'PR #{pr["number"]}: 等待其他检查完成，下一轮重试')
+            return
         if pr.get('draft'):
             # gh 使用 GraphQL 将草稿转为就绪；无需其他人的批准操作。
             run(self.work, 'gh', 'pr', 'ready', str(pr['number']), '--repo', self.repo)
@@ -321,7 +315,7 @@ class Pilot:
         if not pr.get('merged_at') or not eligible(pr, self.repo, self.base):
             return False
         notices = self.notices(pr)
-        return 'opened' in notices and 'followup:' + pr.get('merge_commit_sha', '') not in notices
+        return bool({'managed', 'opened'} & notices) and 'followup:' + pr.get('merge_commit_sha', '') not in notices
 
     def pending(self) -> bool:
         """只读检查，不安装工具、不拉取仓库，也不发送空检查通知。"""
@@ -348,17 +342,19 @@ class Pilot:
                 failures += 1
                 print(f'PR #{pr["number"]}: {error}')
                 current = self.api(f'/pulls/{pr["number"]}')
-                if not current.get('merged'):
+                if current.get('merged'):
+                    self.notify(current, f'followup-failed:{current["merge_commit_sha"]}', '⚠️ 合入后同步待重试', str(error))
+                else:
                     self.status(current, 'failure')
-                digest = hashlib.sha256(str(error).encode()).hexdigest()[:12]
-                self.notify(current, f'failed:{current["head"]["sha"]}:{digest}', '⚠️ 自动化处理受阻', str(error))
+                    digest = hashlib.sha256(str(error).encode()).hexdigest()[:12]
+                    self.notify(current, f'failed:{current["head"]["sha"]}:{digest}', '⚠️ 自动化处理受阻', str(error))
         # 恢复「已合入但发通知／投递时中断」的运行。手动 PR 和历史无记录的 PR 不处理。
         for pr in self.pages('/pulls?state=closed&sort=updated&direction=desc'):
             if pr['number'] in processed or not self.needs_followup(pr):
                 continue
             try:
                 pr = self.api(f'/pulls/{pr["number"]}')
-                self.notify(pr, 'merged', '✅ 自动化 PR 已合入', '已完成自动合入，继续同步需求 Issue 与通知。')
+                self.notify(pr, 'merged', '✅ 自动化 PR 已合入', '已完成自动合入，继续静默同步需求 Issue。')
                 self.followup(pr)
             except Exception as error:
                 failures += 1
