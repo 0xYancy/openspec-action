@@ -3,6 +3,10 @@ description: 'Store 的 PR 检查：openspec validate（改动部分 --strict）
 author: '0xYancy'
 
 inputs:
+  store-path:
+    description: '待校验的 Store 目录；PR 快照放入独立目录，工具安装留在可信工作目录'
+    required: false
+    default: '.'
   base-ref:
     description: '比较基准（默认 origin/<PR 目标分支>）'
     required: false
@@ -26,6 +30,7 @@ runs:
         npm install -g "@fission-ai/openspec@${{ inputs.openspec-version }}" >/dev/null
 
     - name: Validate specs and changes
+      working-directory: ${{ inputs.store-path }}
       shell: bash
       env:
         OPENSPEC_TELEMETRY: '0'
@@ -61,6 +66,7 @@ runs:
         fi
 
     - name: Check status, metadata and protected files
+      working-directory: ${{ inputs.store-path }}
       shell: bash
       run: |
         BASE="${{ inputs.base-ref }}"

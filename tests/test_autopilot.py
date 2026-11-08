@@ -167,6 +167,13 @@ class FlowTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'其他状态检查失败'):
             self.pilot.process(pr(), 'observe')
 
+    def test_reference_sync_delay_is_silent_and_never_marks_failure(self):
+        self.pilot.pages=lambda path:[pr()] if 'state=open' in path else []
+        self.pilot.writer_running=lambda kind:False
+        self.pilot.process=lambda *args:(_ for _ in ()).throw(a.RetryLater('等待引用同步'))
+        self.assertEqual(self.pilot.main(),0)
+        self.assertEqual(self.events, [])
+
     def test_same_failure_alert_is_sent_only_once_across_retries(self):
         self.pilot.notify=a.Pilot.notify.__get__(self.pilot)
         self.pilot.pages=lambda path:[pr()] if 'state=open' in path else []
@@ -214,6 +221,74 @@ class FlowTest(unittest.TestCase):
         self.pilot.process=lambda *args: self.fail('producer is still writing')
         self.assertEqual(self.pilot.main(),0)
 
+
+
+class HeadSyncTest(unittest.TestCase):
+    def setUp(self):
+        self.env=patch.dict(os.environ, GH_TOKEN='test');self.env.start()
+        self.pilot=a.Pilot('o/s','main',Path('.'))
+
+    def tearDown(self):
+        self.env.stop()
+
+    def test_stale_pr_api_is_retried_until_pushed_sha_matches(self):
+        responses=iter([pr(), pr(), pr()])
+        heads=iter(['old','old','new'])
+        def api(*args):
+            result=next(responses);result['head']['sha']=next(heads);return result
+        self.pilot.api=api
+        with patch.object(a.time,'sleep') as sleep:
+            result=self.pilot.wait_for_head(pr(),'new')
+        self.assertEqual(result['head']['sha'],'new')
+        self.assertEqual([call.args[0] for call in sleep.call_args_list],[1,2])
+
+    def test_stale_api_or_concurrently_changed_head_is_bounded_and_deferred(self):
+        self.pilot.api=lambda *args:pr()
+        with patch.object(a.time,'sleep') as sleep, self.assertRaises(a.RetryLater):
+            self.pilot.wait_for_head(pr(),'expected')
+        self.assertEqual(sleep.call_count,len(a.SYNC_DELAYS)-1)
+
+    def test_stale_pull_ref_is_retried_before_validation(self):
+        heads=iter(['old','head'])
+        def run(work,*args):
+            return next(heads) if args[:2]==('git','rev-parse') else ''
+        with patch.object(a,'run',side_effect=run) as command, patch.object(a.time,'sleep') as sleep:
+            self.assertEqual(self.pilot.fetch_pr_head(pr()),'refs/openspec-autopilot/pr-1')
+        self.assertEqual(sum(c.args[1:3]==('git','fetch') for c in command.call_args_list),2)
+        sleep.assert_called_once_with(1)
+
+    def test_ref_never_matches_and_no_validation_tree_is_created(self):
+        with patch.object(a,'run',return_value='stale') as run, patch.object(a.time,'sleep'), self.assertRaises(a.RetryLater):
+            self.pilot.validate(pr(),'archive')
+        self.assertFalse(any('worktree' in call.args for call in run.call_args_list))
+
+    def test_file_guard_uses_git_snapshot_without_reading_stale_pr_files_api(self):
+        self.pilot.fetch_pr_head=lambda pr:'ref'
+        self.pilot.pages=lambda path:self.fail('PR files API must not determine validation scope')
+        def run(work,*args):
+            return 'base' if args[:2]==('git','rev-parse') else '.github/workflows/injected.yml'
+        with patch.object(a,'run',side_effect=run), self.assertRaisesRegex(RuntimeError,'范围外'):
+            self.pilot.validate(pr(),'archive')
+
+    def test_renamed_archive_files_still_reject_leftover_active_change(self):
+        self.pilot.fetch_pr_head=lambda pr:'ref'
+        def run(work,*args):
+            if args[:2]==('git','rev-parse'): return 'base'
+            if args[:2]==('git','diff'): return 'openspec/changes/archive/2026-11-08-a/proposal.md'
+            if args[:3]==('git','worktree','add'):
+                (Path(args[-2])/'openspec/changes/a').mkdir(parents=True)
+            return ''
+        with patch.object(a,'run',side_effect=run), self.assertRaisesRegex(RuntimeError,'仍包含活动 Change'):
+            self.pilot.validate(pr(),'archive')
+
+    def test_store_check_installs_tools_outside_the_untrusted_pr_directory(self):
+        import yaml
+        data=yaml.safe_load((ROOT/'.github/actions/store-check/action.yml').read_text())
+        steps={s['name']:s for s in data['runs']['steps']}
+        self.assertNotIn('working-directory',steps['Install OpenSpec CLI'])
+        for name in ['Validate specs and changes','Check status, metadata and protected files']:
+            self.assertEqual(steps[name]['working-directory'],'${{ inputs.store-path }}')
+        self.assertNotIn('npm install',steps['Validate specs and changes']['run'])
 
 
 class PendingTest(unittest.TestCase):
@@ -325,7 +400,7 @@ The system SHALL show a confirmation before submission and display the amount.
 - **THEN** the system shows a confirmation with the amount
 '''
 
-    def exercise(self, existing):
+    def exercise(self, existing, lag=False):
         import shutil
         import subprocess
         if not shutil.which('openspec'): self.skipTest('requires OpenSpec CLI')
@@ -358,12 +433,18 @@ The system SHALL show a confirmation before submission and display the amount.
             p=pr();p['head']['sha']=source_sha;p['body']='<!-- openspec-obs: {"change":"example","prs":["o/d#1"]} -->'
             notifications=[]
             pilot=a.Pilot('o/s','main',work);pilot.notify=lambda *args:notifications.append(args)
+            reads=[]
             def api(path,method='GET',body=None):
                 if method=='PATCH': p['body']=body['body']
-                p['head']['sha']=git(work,'rev-parse','origin/obs/change')
+                else: reads.append(path)
+                p['head']['sha']=source_sha if lag and len(reads)<3 else git(work,'rev-parse','origin/obs/change')
                 return p
             pilot.api=api
-            result=pilot.prepare_archive(p)
+            with patch.object(a.time,'sleep'):
+                result=pilot.prepare_archive(p)
+            self.assertNotEqual(result['head']['sha'],source_sha)
+            git(remote,'update-ref','refs/pull/1/head',result['head']['sha'])
+            pilot.validate(result,'archive')
             git(work,'fetch','origin','obs/change');git(work,'checkout','--detach','origin/obs/change')
             archived=list((work/'openspec/changes/archive').glob('*-example'))
             self.assertEqual(len(archived),1)
@@ -377,6 +458,8 @@ The system SHALL show a confirmation before submission and display the amount.
             again=pilot.prepare_archive(result)
             self.assertEqual(again['head']['sha'],result['head']['sha'])
             self.assertEqual(notifications, [])
+
+    def test_stale_pr_api_after_archive_validates_the_new_commit(self): self.exercise(False,lag=True)
 
     def test_new_backfill_is_archived_in_same_pr(self): self.exercise(False)
     def test_manually_created_change_is_archived_in_same_pr(self): self.exercise(True)

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 ACTIONS = Path(__file__).resolve().parent.parent
@@ -21,6 +22,12 @@ from strict_spec import check as strict_check
 
 BOT = 'github-actions[bot]'
 CHANNEL = 'C0ARQG0J3LM'  # task-manager-notify，与需求通知共用。
+SYNC_DELAYS = (0, 1, 2, 4, 8)
+
+
+class RetryLater(RuntimeError):
+    """GitHub 引用尚未同步或提交并发变化，保持静默，下轮重新发现。"""
+
 
 
 def run(work: Path, *args: str) -> str:
@@ -136,6 +143,33 @@ class Pilot:
         slack(card(self.repo, title, summary, pr['html_url'], pr, self.summary_cache[cache_key]))
         self.mark(pr, key, f'{title}：{summary}')
 
+    def wait_for_head(self, pr: dict, expected: str) -> dict:
+        """推送后的 API head 必须追上本地提交，不能用仍指向旧树的 PR 继续校验。"""
+        for delay in SYNC_DELAYS:
+            if delay:
+                time.sleep(delay)
+            current = self.api(f'/pulls/{pr["number"]}')
+            actual = current['head']['sha']
+            print(f'PR #{pr["number"]}: 等待 PR 同步 expected={expected} api_head={actual}')
+            if actual == expected:
+                return current
+        raise RetryLater(f'PR #{pr["number"]} 的 head 尚未同步到 {expected}，下轮重新校验')
+
+    def fetch_pr_head(self, pr: dict) -> str:
+        """API 与 refs/pull 都匹配同一不可变 SHA 后才允许创建校验工作树。"""
+        ref = f'refs/openspec-autopilot/pr-{pr["number"]}'
+        expected = pr['head']['sha']
+        for delay in SYNC_DELAYS:
+            if delay:
+                time.sleep(delay)
+            run(self.work, 'git', 'fetch', '--quiet', 'origin',
+                f'+refs/heads/{self.base}:refs/remotes/origin/{self.base}', f'+refs/pull/{pr["number"]}/head:{ref}')
+            actual = run(self.work, 'git', 'rev-parse', ref)
+            print(f'PR #{pr["number"]}: 拉取校验引用 expected={expected} pull_ref={actual}')
+            if actual == expected:
+                return ref
+        raise RetryLater(f'PR #{pr["number"]} 的引用仍未匹配 {expected}，下轮重新校验')
+
     def prepare_archive(self, pr: dict) -> dict:
         """在同一观察 PR 完成归档；新补登和匹配的手写 Change 均保留归档记录。"""
         marker = parse_marker(pr.get('body') or '') or {}
@@ -144,6 +178,12 @@ class Pilot:
             raise RuntimeError('观察 PR 缺少完整 Change，保留草稿等待重试或修正')
         run(self.work, 'git', 'fetch', '--quiet', 'origin', f'+refs/heads/{self.base}:refs/remotes/origin/{self.base}',
             f'+refs/heads/{pr["head"]["ref"]}:refs/remotes/origin/{pr["head"]["ref"]}')
+        branch_head = run(self.work, 'git', 'rev-parse', f'origin/{pr["head"]["ref"]}')
+        if branch_head != pr['head']['sha']:
+            pr = self.wait_for_head(pr, branch_head)
+            marker = parse_marker(pr.get('body') or '') or {}
+            if marker.get('change') != name:
+                raise RetryLater('观察 PR 的 Change 标记已变化，下轮重新发现')
         with tempfile.TemporaryDirectory(prefix='obs-archive-') as tmp:
             work = Path(tmp) / 'work'
             run(self.work, 'git', 'worktree', 'add', '--detach', str(work), pr['head']['sha'])
@@ -180,6 +220,7 @@ class Pilot:
                     raise RuntimeError('归档器产生了范围外改动，未推送')
                 run(work, 'git', 'add', '-A', '--', 'openspec/changes', 'openspec/specs')
                 run(work, 'git', 'commit', '-m', 'obs: 自动归档 ' + name)
+                expected_head = run(work, 'git', 'rev-parse', 'HEAD')
                 run(work, 'git', 'push', 'origin', f'HEAD:refs/heads/{pr["head"]["ref"]}')
                 marker['archived'] = True
                 body = re.sub(r'<!--\s*openspec-obs:.*?-->', '', pr.get('body') or '', flags=re.S).rstrip()
@@ -187,20 +228,17 @@ class Pilot:
                 self.api(f'/pulls/{pr["number"]}', 'PATCH', {'body': body})
             finally:
                 subprocess.run(['git', 'worktree', 'remove', '--force', str(work)], cwd=self.work, capture_output=True)
-        pr = self.api(f'/pulls/{pr["number"]}')
-        return pr
+        return self.wait_for_head(pr, expected_head)
 
     def validate(self, pr: dict, kind: str) -> None:
         sha = pr['head']['sha']
-        paths = [f['filename'] for f in self.pages(f'/pulls/{pr["number"]}/files')]
+        self.fetch_pr_head(pr)
+        self.validated_base = run(self.work, 'git', 'rev-parse', f'origin/{self.base}')
+        # 文件范围从实际 Git 快照计算，避免 PR files API 在推送后返回旧差异。
+        paths = run(self.work, 'git', 'diff', '--name-only', '--no-renames', f'{self.validated_base}...{sha}').splitlines()
+        print(f'PR #{pr["number"]}: 校验 head={sha} base={self.validated_base} files={len(paths)}')
         if not allowed_files(kind, paths):
             raise RuntimeError('PR 含本流程范围外的路径，已停止合入')
-        ref = f'refs/openspec-autopilot/pr-{pr["number"]}'
-        run(self.work, 'git', 'fetch', '--quiet', 'origin', f'+refs/heads/{self.base}:refs/remotes/origin/{self.base}', f'+refs/pull/{pr["number"]}/head:{ref}')
-        # 以不可变 head SHA 校验，与最新主分支试合并；并发更新由 merge API 的 sha 再次拦截。
-        if run(self.work, 'git', 'rev-parse', ref) != sha:
-            raise RuntimeError('PR 提交已变化，下一轮重新校验')
-        self.validated_base = run(self.work, 'git', 'rev-parse', f'origin/{self.base}')
         if kind == 'wiki':
             ancestor = run(self.work, 'git', 'merge-base', sha, self.validated_base)
             stale = run(self.work, 'git', 'diff', '--name-only', ancestor, self.validated_base, '--',
@@ -229,6 +267,10 @@ class Pilot:
                 # Wiki 的结构、出处校验由 wiki-sync 在提交前执行；自动合入额外限制为发布产物。
                 # 即使只有元数据变更，也检查所有被触及的活动 Change。
                 changes = {p.split('/')[2] for p in paths if p.startswith('openspec/changes/') and len(p.split('/')) > 3 and p.split('/')[2] != 'archive'}
+                if kind == 'archive':
+                    # Git 将整个 Change 识别为重命名时，仍从归档目录反查活动目录。
+                    changes |= {re.sub(r'^\d{4}-\d{2}-\d{2}-', '', p.split('/')[3]) for p in paths
+                                if p.startswith('openspec/changes/archive/') and len(p.split('/')) > 4}
                 for name in sorted(changes):
                     if kind == 'archive' and (work / 'openspec/changes' / name).is_dir():
                         raise RuntimeError('归档 PR 仍包含活动 Change，拒绝合入')
@@ -338,6 +380,8 @@ class Pilot:
             processed.add(pr['number'])
             try:
                 self.process(pr, kind)
+            except RetryLater as pending:
+                print(str(pending))
             except Exception as error:
                 failures += 1
                 print(f'PR #{pr["number"]}: {error}')
