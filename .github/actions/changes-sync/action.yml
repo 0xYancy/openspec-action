@@ -3,6 +3,10 @@ description: '将 openspec changes 元数据与文档同步到 Notion Task 数�
 author: '0xYancy'
 
 inputs:
+  notion-sync-enabled:
+    description: '显式启用旧 Notion 同步；默认关闭，仅框架仓自身迭代启用'
+    required: false
+    default: 'false'
   metadata:
     description: 'JSON 数组：本次 push 涉及的 change 元数据（由调用方 workflow 用 grep + sed 提取构造）'
     required: true
@@ -53,6 +57,7 @@ runs:
   using: 'composite'
   steps:
     - name: Ensure dependencies
+      if: inputs['notion-sync-enabled'] == 'true'
       shell: bash
       run: |
         # GitHub-hosted ubuntu runner 默认带 jq / python3 / curl / git，这里仅做存在性检查
@@ -69,6 +74,7 @@ runs:
         fi
 
     - name: Run changes sync
+      if: inputs['notion-sync-enabled'] == 'true'
       shell: bash
       env:
         METADATA: ${{ inputs.metadata }}

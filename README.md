@@ -10,6 +10,8 @@
 - Slack 通知（commit diff 摘要 + assignee @mention）
 - GitHub Actions step summary 输出同步结果
 
+旧 `changes-sync` 默认关闭：实现仓遗留 workflow（包括旧功能分支）不再执行依赖安装、Notion 写入、LLM 或旧摘要通知。产品 Store 使用独立需求投递和通知；仅框架仓自身迭代显式设置 `notion-sync-enabled: 'true'`。
+
 ## 用法
 
 在调用方仓库的 workflow 中：
@@ -37,6 +39,7 @@ jobs:
 
       - uses: 0xYancy/openspec-action/.github/actions/changes-sync@main
         with:
+          notion-sync-enabled: 'true' # 仅框架仓自身迭代启用
           metadata: ${{ steps.meta.outputs.metadata }}
           changed-files: ${{ steps.meta.outputs.changed-files }}
           repo: ${{ github.repository }}
@@ -53,6 +56,7 @@ jobs:
 
 | input | 必需 | 说明 |
 |-------|-----|------|
+| `notion-sync-enabled` | ❌ | 默认 `false`，仅框架仓自身迭代显式设为 `true` |
 | `metadata` | ✅ | JSON 数组：本次 push 涉及的 change 元数据 |
 | `changed-files` | ✅ | 空格分隔的文件路径列表（来自 git diff --name-only） |
 | `repo` | ✅ | owner/name 仓库标识 |
