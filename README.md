@@ -1,3 +1,5 @@
+> 维护入口已迁移到 [bifrost-io/openspec-f](https://github.com/bifrost-io/openspec-f) 的 `.github/actions/`。新功能与修复在框架仓统一维护。本仓保留原 Action，供尚未迁移的历史分支兼容使用；现有执行逻辑不变。下文为原使用说明。
+
 # openspec-action
 
 将 [OpenSpec](https://github.com/0xYancy/openspec-f) changes 元数据与文档同步到 Notion Task 数据库的 GitHub Composite Action。
