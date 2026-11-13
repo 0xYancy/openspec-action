@@ -309,6 +309,27 @@ class ArchiveTest(unittest.TestCase):
             self.assertIn(f"能力甲：{long_text}", (root / "openspec/specs/cap-a/spec.md").read_text(encoding="utf-8"))
             self.assertIn("能力丙：用户可以提前赎回并支付手续费", (root / "openspec/specs/cap-c/spec.md").read_text(encoding="utf-8"))
 
+    def test_fill_purpose_from_capability_lists_without_rewriting_valid_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            placeholder = "# spec\n\n## Purpose\nTBD - created by archiving change x. Update Purpose after archive.\n"
+            for cap in ['chinese', 'english', 'empty', 'todo', 'wrong', 'existing']:
+                write_file(root, f"openspec/specs/{cap}/spec.md", placeholder)
+            original = "# Existing\n\n## Purpose\n保留已确认的用途说明。\n"
+            write_file(root, "openspec/specs/existing/spec.md", original)
+            proposal = ("## 涉及规范\n\n- `chinese`：链下披露数据及新鲜度\n"
+                        "* `english`: Preserve paths such as C:\\reports and exact user wording.\n"
+                        "- `empty`：\n- `other`: must not fill the previous empty description\n"
+                        "- `todo`: TODO\n- `wrong-extra`: do not match a capability prefix\n"
+                        "- `existing`: replacement must not overwrite valid Purpose\n")
+            missing = archive.fill_purposes(root, proposal, ['chinese', 'english', 'empty', 'todo', 'wrong', 'existing'])
+            self.assertEqual(missing, ['empty', 'todo', 'wrong'])
+            self.assertIn('链下披露数据及新鲜度', (root/'openspec/specs/chinese/spec.md').read_text())
+            self.assertIn(r'C:\reports', (root/'openspec/specs/english/spec.md').read_text())
+            for cap in missing:
+                self.assertEqual((root/f'openspec/specs/{cap}/spec.md').read_text(), placeholder)
+            self.assertEqual((root/'openspec/specs/existing/spec.md').read_text(), original)
+
     def test_pr_target(self) -> None:
         self.assertEqual(archive.pr_target(["openspec/changes/tvl/.openspec.yaml"]), {"change": "tvl"})
         self.assertEqual(archive.pr_target(["openspec/changes/obs-dapp-28/proposal.md", "openspec/changes/obs-dapp-28/specs/a/spec.md"]),

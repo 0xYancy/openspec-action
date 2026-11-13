@@ -30,12 +30,53 @@ class RetryLater(RuntimeError):
 
 
 
+def failure_reason(args: tuple[str, ...], output: str) -> str:
+    """通知保留可操作的失败原因，过滤凭据、临时路径和终端控制字符。"""
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output)
+    for name, value in os.environ.items():
+        if not value or not re.search(r'TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY', name, re.I):
+            continue
+        secrets = [value]
+        # 多组织凭据以 JSON 传入，子值也不能出现在通知中。
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                secrets += [v for v in parsed.values() if isinstance(v, str)]
+        except ValueError:
+            pass
+        for secret in sorted(secrets, key=len, reverse=True):
+            if len(secret) >= 4:
+                text = text.replace(secret, '[已隐藏]')
+    text = re.sub(r'https?://[^/\s@]+@', 'https://[已隐藏]@', text)
+    text = re.sub(r'(?i)(Bearer\s+|(?:token|key|secret|password)=)[^\s&]+', r'\1[已隐藏]', text)
+    text = re.sub(r'/\S*(?:obs-archive|obs-validate)-[^/\s]+(?:/work)?', '<临时目录>', text)
+    text = re.sub(r'/home/runner/work/_actions/[^\s:]+', '<action>', text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    archive = len(args) > 1 and Path(args[1]).name == 'archive.py'
+    issues = [line for line in lines if re.match(r'^[a-z0-9][a-z0-9-]*: \[(?:ERROR|WARNING)\] ', line)]
+    placeholders = [line.split(':', 1)[0] for line in issues if 'Purpose section is still a placeholder' in line]
+    if archive and issues and len(placeholders) == len(issues):
+        capabilities = list(dict.fromkeys(placeholders))
+        return ('归档校验未通过：' + str(len(capabilities)) + ' 个规范的 Purpose 仍为占位内容，需补充有效用途说明：'
+                + '、'.join(capabilities))[:550]
+    label = '归档失败' if archive else f'{Path(args[0]).name} 执行失败'
+    if issues:
+        details = '；'.join(line[:160] for line in issues[:3])
+        if len(issues) > 3:
+            details += f'；另有 {len(issues) - 3} 项，详见运行日志'
+    else:
+        important = [line for line in lines if re.search(r'error|fatal|exception|失败|不能归档|未通过|拒绝', line, re.I)
+                     and not line.startswith(('Traceback', 'File '))]
+        details = '；'.join((important or lines)[-3:])
+    return label + ('：' + details[:480] if details else '，命令未返回错误详情，请查看运行日志')
+
+
 def run(work: Path, *args: str) -> str:
     p = subprocess.run(args, cwd=work, capture_output=True, text=True)
     if p.returncode:
-        # 外部输出只在 CI 日志展示，卡片使用稳定、简短的错误分类。
-        print((p.stdout + p.stderr)[-6000:])
-        raise RuntimeError(f'{args[0]} {args[1] if len(args) > 1 else ""} 执行失败，详情见运行日志')
+        output = p.stdout + '\n' + p.stderr
+        print(output[-6000:])
+        raise RuntimeError(failure_reason(args, output))
     return p.stdout.strip()
 
 

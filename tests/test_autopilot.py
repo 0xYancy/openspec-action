@@ -46,6 +46,54 @@ class GuardTest(unittest.TestCase):
         self.assertIn('查看 PR', payload['blocks'][-1]['elements'][0]['text'])
 
 
+class FailureReasonTest(unittest.TestCase):
+    def test_failed_archive_reason_reaches_the_notification_card(self):
+        import subprocess
+        caps = ['rwa-framework-v1', 'tbpros-product', 'tbpros-subscription']
+        output = '\n'.join(f'{cap}: [WARNING] Purpose section is still a placeholder rather than a Purpose anyone wrote' for cap in caps)
+        args = ('python3', '/home/runner/work/_actions/o/action/main/.github/actions/archive/archive.py')
+        with patch.object(a.subprocess, 'run', return_value=subprocess.CompletedProcess(args, 1, output, '')):
+            with self.assertRaises(RuntimeError) as caught:
+                a.run(Path('.'), *args)
+        message = str(caught.exception)
+        self.assertIn('3 个规范的 Purpose', message)
+        for cap in caps:
+            self.assertIn(cap, message)
+        self.assertNotIn('/home/runner', message)
+        with patch.dict(os.environ, RUN_URL='https://github.com/o/s/actions/runs/123'):
+            payload = a.card('o/s', '⚠️ 自动化处理受阻', message, pr()['html_url'], pr())
+        self.assertIn(message, payload['blocks'][2]['text']['text'])
+        self.assertIn('运行详情', payload['blocks'][-1]['elements'][0]['text'])
+
+    def test_error_details_are_bounded_redacted_and_stable_across_temp_paths(self):
+        args = ('python3', '/actions/archive/archive.py')
+        output = ('\x1b[31mError: /tmp/obs-archive-abc/work/spec.md rejected; '
+                  'credential=local-secret-value token=unknown-secret '
+                  'https://user:password@github.com/o/s and Bearer another-secret\x1b[0m')
+        with patch.dict(os.environ, GH_TOKEN='local-secret-value'):
+            reason = a.failure_reason(args, output)
+        for secret in ['local-secret-value', 'unknown-secret', 'user:password', 'another-secret', '\x1b', 'obs-archive-abc']:
+            self.assertNotIn(secret, reason)
+        self.assertIn('spec.md rejected', reason)
+        with patch.dict(os.environ, GH_TOKEN='local-secret-value'):
+            self.assertEqual(reason, a.failure_reason(args, output.replace('obs-archive-abc', 'obs-archive-xyz')))
+        self.assertLessEqual(len(a.failure_reason(args, 'Error: ' + 'x' * 4000)), 550)
+
+    def test_multiple_token_json_values_are_redacted(self):
+        with patch.dict(os.environ, OPENSPEC_ISSUE_TOKENS='{"org":"org-secret-value"}'):
+            self.assertNotIn('org-secret-value', a.failure_reason(('git', 'push'), 'fatal: org-secret-value rejected'))
+
+    def test_mixed_validation_errors_keep_non_purpose_reason(self):
+        text = ('cap-a: [WARNING] Purpose section is still a placeholder\n'
+                'cap-b: [ERROR] Requirement must include a scenario')
+        reason = a.failure_reason(('python3', '/actions/archive/archive.py'), text)
+        self.assertIn('Requirement must include a scenario', reason)
+        self.assertIn('cap-a', reason)
+
+    def test_empty_command_output_still_explains_failure(self):
+        self.assertIn('命令未返回错误详情', a.failure_reason(('git', 'push'), ''))
+
+
 class FlowTest(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, GH_TOKEN='test'); self.env.start()
@@ -400,7 +448,7 @@ The system SHALL show a confirmation before submission and display the amount.
 - **THEN** the system shows a confirmation with the amount
 '''
 
-    def exercise(self, existing, lag=False):
+    def exercise(self, existing, lag=False, new_capability=False):
         import shutil
         import subprocess
         if not shutil.which('openspec'): self.skipTest('requires OpenSpec CLI')
@@ -412,10 +460,14 @@ The system SHALL show a confirmation before submission and display the amount.
             git(root,'clone',str(remote),str(work))
             git(work,'config','user.name',a.BOT); git(work,'config','user.email','test@example.com'); git(work,'config','commit.gpgsign','false')
             cap=work/'openspec/specs/cap/spec.md';cap.parent.mkdir(parents=True);cap.write_text(self.SPEC)
+            delta_text = self.DELTA.replace('## MODIFIED Requirements', '## ADDED Requirements') if new_capability else self.DELTA
+            if new_capability:
+                cap.unlink()
+                (work/'README.md').write_text('Store integration fixture\n')
             change=work/'openspec/changes/example';change.mkdir(parents=True)
             meta=change/'.openspec.yaml';meta.write_text('schema: store\nstatus: 已批准\ntitle: Confirmation\nID: 20261105-abcd\nassignee: Janpo\nversion: 1.0.0\nrepositories: [o/d]\n')
             (change/'proposal.md').write_text('## Why\n\nDisplay confirmation amount.\n\n## What Changes\n\nShow the amount.\n\n## Capabilities\n\n### Modified Capabilities\n- `cap`: Confirmation amount.\n\n## Impact\n\nUsers.\n')
-            delta=change/'specs/cap/spec.md';delta.parent.mkdir(parents=True);delta.write_text(self.DELTA)
+            delta=change/'specs/cap/spec.md';delta.parent.mkdir(parents=True);delta.write_text(delta_text)
             if not existing:
                 # 新 Change 只在观察分支上出现。
                 shutil.rmtree(change)
@@ -424,7 +476,7 @@ The system SHALL show a confirmation before submission and display the amount.
             if not existing:
                 change.mkdir(parents=True);meta.write_text('schema: store\nstatus: 已实现\ntitle: Confirmation\nID: 20261105-abcd\nassignee: Janpo\nversion: 1.0.0\nrepositories: [o/d]\n')
                 (change/'proposal.md').write_text('## Why\n\nDisplay confirmation amount.\n\n## What Changes\n\nShow amount.\n\n## Capabilities\n\n### Modified Capabilities\n- `cap`: Amount.\n\n## Impact\n\nUsers.\n')
-                delta.parent.mkdir(parents=True);delta.write_text(self.DELTA)
+                delta.parent.mkdir(parents=True);delta.write_text(delta_text)
             else:
                 meta.write_text(meta.read_text().replace('已批准','已实现'))
             meta.write_text(meta.read_text()+'implementations:\n  - pr: o/d#1\n    url: https://github.com/o/d/pull/1\n')
@@ -452,12 +504,15 @@ The system SHALL show a confirmation before submission and display the amount.
             self.assertEqual(data['status'],'已归档');self.assertEqual(data['assignee'],'Janpo')
             self.assertEqual(data['implementations'][0]['pr'],'o/d#1')
             self.assertFalse(change.exists());self.assertIn('display the amount',cap.read_text())
+            self.assertNotIn('TBD - created by archiving', cap.read_text())
             self.assertTrue((cap.parent/'changelog.md').is_file())
             self.assertTrue(a.parse_marker(result['body'])['archived'])
             # 重跑保持相同 SHA，不重复归档或重复 changelog。
             again=pilot.prepare_archive(result)
             self.assertEqual(again['head']['sha'],result['head']['sha'])
             self.assertEqual(notifications, [])
+
+    def test_new_capability_list_fills_purpose_before_strict_validation(self): self.exercise(False, new_capability=True)
 
     def test_stale_pr_api_after_archive_validates_the_new_commit(self): self.exercise(False,lag=True)
 

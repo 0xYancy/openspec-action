@@ -91,13 +91,19 @@ def fill_purposes(store: Path, proposal: str, capabilities: list[str]) -> list[s
         text = spec.read_text(encoding="utf-8")
         if not TBD_PURPOSE.search(text):
             continue
-        match = re.search(rf"\*\*(.+?)\*\*（标识 `{re.escape(capability)}`）[：:]\s*(.+)", proposal)
+        match = re.search(rf"\*\*(.+?)\*\*（标识 `{re.escape(capability)}`）[：:][ \t]*(.+)", proposal)
         purpose = f"{match.group(1)}：{match.group(2).strip()}" if match else ""
-        if purpose:
-            spec.write_text(TBD_PURPOSE.sub(purpose, text, count=1), encoding="utf-8")
+        if not match:
+            # 原生 Capabilities 列表和中文「涉及规范」使用相同的标识列表写法。
+            # 限制在同一行内，空说明不能误取下一项或后续章节。
+            match = re.search(rf"^[ \t]*[-*+][ \t]+`{re.escape(capability)}`[ \t]*[：:][ \t]*(\S[^\r\n]*)$", proposal, re.M)
+            purpose = match.group(1).strip() if match else ""
         # 完整的短 Purpose 只提醒；缺失、为空或占位仍需补写。
-        if not purpose.strip() or re.search(r"\b(TBD|TODO)\b", purpose, re.I):
+        if not purpose or re.search(r"\b(TBD|TODO)\b", purpose, re.I):
             missing.append(capability)
+            continue
+        # 使用回调，避免说明中的反斜杠被 re.sub 当成替换表达式。
+        spec.write_text(TBD_PURPOSE.sub(lambda _: purpose, text, count=1), encoding="utf-8")
     return missing
 
 
