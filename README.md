@@ -1,4 +1,4 @@
-> 维护入口已迁移到 [bifrost-io/openspec-f](https://github.com/bifrost-io/openspec-f) 的 `.github/actions/`。新功能与修复在框架仓统一维护。本仓保留原 Action，供尚未迁移的历史分支兼容使用；现有执行逻辑不变。下文为原使用说明。
+> 维护入口已迁移到 [bifrost-io/team-openspec-framework](https://github.com/bifrost-io/team-openspec-framework) 的 `.github/actions/`。新功能与修复在框架仓统一维护。本仓保留原 Action，供尚未迁移的历史分支兼容使用；现有执行逻辑不变。下文为原使用说明。
 
 # openspec-action
 
